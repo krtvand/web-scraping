@@ -5,6 +5,7 @@ from grab import Grab
 import logging
 import re
 import sys
+import os
 
 class Category(object):
     def __init__(self, name):
@@ -18,7 +19,7 @@ class Svetservis(object):
         self.categories = []
         # Зададим параметры логгирования
         self.logger = logging.getLogger(__name__)
-        self.logger.setLevel(logging.INFO)
+        self.logger.setLevel(logging.DEBUG)
         formatter = logging.Formatter(u'%(filename)s[LINE:%(lineno)d]# %(levelname)-8s [%(asctime)s]  %(message)s')
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setFormatter(formatter)
@@ -28,7 +29,6 @@ class Svetservis(object):
             self.g.go('http://store.svetservis.ru/map/')
         except:
             self.logger.warn('Can not access http://store.svetservis.ru/map/')
-
         ul_level_1_number = 1
         ul_level_1_selectors = self.g.doc.select('//div[@class="pod_cart"]/ul')
         for ul_level_1_selector in ul_level_1_selectors:
@@ -48,12 +48,44 @@ class Svetservis(object):
                     self.logger.debug(category_level_3_selector.text())
                 li_index += 1
 
+    def get_goods(self):
+        try:
+            self.g.go('http://store.svetservis.ru/shop/CID_200027051.html')
+        except:
+            self.logger.warn('Can not access %s' % 'http://store.svetservis.ru/shop/CID_200027051.html')
+            return None
+        # Получаем название товара
+        title = self.g.doc.select('//div[@class="IndexSpecMainDiv"]//a[@class="product_name"]').text()
+        self.logger.debug('title: %s' % title)
+        # Получаем карточку товара, которая представлена в виде таблицы
+        good_table = self.g.doc.select(u'//div[@class="IndexSpecMainDiv"]//table//table[//a[@title="' + title + u'"]]')
+        # Получаем артикул товара
+        articul = good_table.select(u'//div[starts-with(.,"Артикул")]').text()
+        self.logger.debug(articul)
+        print good_table
+        # Получаем изображение товара
+        img_ref = self.g.doc.select(u"//div[@class='IndexSpecMainDiv']//img[contains(@title,'"
+                                    + title + u"')]").attr('src')
+        resp = self.g.go(img_ref)
+        # Создаем у себя такую же директорию, как на сайте, например:
+        # img_ref = /UserFiles/Image/010104_provod_ustanovochnyj_mednyj/09000395_1s.jpg
+        # img_directory ./UserFiles/Image/010104_provod_ustanovochnyj_mednyj/
+        img_directory = '.' + re.sub(r'[^/]*$','',img_ref)
+        if not os.path.exists(img_directory):
+            os.makedirs(img_directory)
+        with open('.' + img_ref, 'w') as img:
+                img.write(resp.body)
+
+
 
 s = Svetservis()
-s.get_categories()
+#s.get_categories()
+s.get_goods()
+"""
 for category in s.categories:
     print '%s %s %s ' % (category.name, category.link, len(category.children))
     for it in category.children:
         print '%s %s %s ' % (it.name, it.link, len(it.children))
         for el in it.children:
             print '%s %s %s ' % (el.name, el.link, len(el.children))
+"""
