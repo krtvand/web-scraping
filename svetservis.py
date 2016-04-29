@@ -11,6 +11,7 @@ from sqlalchemy import Column, DateTime, String, Integer, ForeignKey, func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from tidylib import tidy_document
 
 Base = declarative_base()
 
@@ -91,30 +92,28 @@ class Svetservis(object):
         with open('.' + img_ref, 'w') as img:
                 img.write(resp.body)
 
-    def get_goods(self):
+    def get_goods_from_price_page(self, price_page_url):
         try:
-            self.g.go('http://store.svetservis.ru/shop/CID_200027051.html')
+            self.g.go(price_page_url)
         except:
-            self.logger.warn('Can not access %s' %
-                             'http://store.svetservis.ru/shop/CID_200027051.html')
+            self.logger.warn('Can not access %s' % price_page_url)
             return None
-        # Получаем название товара
-        title = self.g.doc.select('//div[@class="IndexSpecMainDiv"]//a[@class="product_name"]').text()
-        self.logger.debug('title: %s' % title)
+
+    def get_goods(self, g, title):
         # Получаем карточку товара, которая представлена в виде таблицы
-        good_table = self.g.doc.select(u'//div[@class="IndexSpecMainDiv"]//table//table[//a[@title="' +
-                                       title + u'"]]')
+        goods_table = g.doc.select(u'//div[@class="IndexSpecMainDiv"]//table//table[//a[@title="%s"]]' % title)
         # Получаем артикул товара
-        articul = good_table.select(u'//div[starts-with(.,"Артикул")]').text()
+        articul = goods_table.select(u'//div[starts-with(.,"Артикул")]').text()
         articul = articul.split(' ')[-1]
-        self.logger.debug(articul)
+        self.logger.debug('Articul: %s' % articul)
         # Получаем наименование товара как оно указано в прайсе из элемента "Характеристики"
-        name_from_price = good_table.select('//div[@class="prodDesc"]').text()
-        self.logger.debug(name_from_price)
+        name_from_price = goods_table.select('//div[@class="prodDesc"]').text()
+        self.logger.debug('Name from price: %s' % name_from_price)
         # Получаем изображение товара
-        img_ref = self.g.doc.select(u"//div[@class='IndexSpecMainDiv']//img[contains(@title,'"
-                                    + title + u"')]").attr('src')
+        img_ref = g.doc.select(u"//div[@class='IndexSpecMainDiv']//img[contains(@title,'%s')]" %
+                                    title).attr('src')
         self.download_image(img_ref)
+        self.logger.debug('Image reference: %s' % img_ref)
         # Сохраняем товар в базу данных
         goods = Goods(articul=articul.encode('utf-8'),
                       name_from_price=name_from_price.encode('utf-8'),
@@ -125,20 +124,35 @@ class Svetservis(object):
         s.commit()
 
         # Получаем ссылку на каталог товаров в виде прайс листа
-        print self.g.doc.select(u'//div[@class="col-2"]//a[contains(.,"Прайс-лист каталога")]').attr('title')
+        #print self.g.doc.select(u'//div[@class="col-2"]//a[contains(.,"Прайс-лист каталога")]').attr('title')
 
-    def get_goods_from_price_page(self, price_page_url):
+    def scrap_category(self, category_ref):
+        g = Grab()
         try:
-            self.g.go(price_page_url)
+            resp = g.go(category_ref)
         except:
-            self.logger.warn('Can not access %s' % price_page_url)
+            self.logger.warn('Can not access %s' % category_ref)
             return None
+        cards = g.doc.select('//div[@class="IndexSpecMainDiv"]/table/tr/td/table')
+        print g.doc.select('//div[@class="IndexSpecMainDiv"]/table/tr/td/table').html()
+        for card in cards:
+            #print card.select('./table/tr/td/tr/div/a[@class="product_name"]').exists()
+            print card.select('//table').exists()
+
+        # Получаем название товара
+        #titles = g.doc.select('//div[@class="IndexSpecMainDiv"]//a[@class="product_name"]')
+        #for title in titles:
+        #    self.logger.debug('title: %s' % title.text())
+        #    self.get_goods(g, title.text())
 
 
+
+
+#document, errors = tidy_document('''<p>f&otilde;o <img src="bar.jpg">''', options={'numeric-entities':1})
 
 s = Svetservis()
 #s.get_categories()
-s.get_goods()
+s.scrap_category('http://store.svetservis.ru/shop/CID_200027051.html')
 
 """
 for category in s.categories:
