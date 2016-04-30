@@ -11,7 +11,7 @@ from sqlalchemy import Column, DateTime, String, Integer, ForeignKey, func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from tidylib import tidy_document
+#from tidylib import tidy_document
 
 Base = declarative_base()
 
@@ -99,19 +99,19 @@ class Svetservis(object):
             self.logger.warn('Can not access %s' % price_page_url)
             return None
 
-    def get_goods(self, g, title):
-        # Получаем карточку товара, которая представлена в виде таблицы
-        goods_table = g.doc.select(u'//div[@class="IndexSpecMainDiv"]//table//table[//a[@title="%s"]]' % title)
+    def get_goods(self, card_selector):
+        # Получаем наименование товара
+        title = card_selector.select('./tr/td/table/tr/div/a[@class="product_name"]').text()
+        self.logger.debug('Title: %s' % title)
         # Получаем артикул товара
-        articul = goods_table.select(u'//div[starts-with(.,"Артикул")]').text()
+        articul = card_selector.select(u'./tr/td/div[starts-with(.,"Артикул")]').text()
         articul = articul.split(' ')[-1]
         self.logger.debug('Articul: %s' % articul)
         # Получаем наименование товара как оно указано в прайсе из элемента "Характеристики"
-        name_from_price = goods_table.select('//div[@class="prodDesc"]').text()
+        name_from_price = card_selector.select('./tr/td/div[@class="prodDesc"]').text()
         self.logger.debug('Name from price: %s' % name_from_price)
         # Получаем изображение товара
-        img_ref = g.doc.select(u"//div[@class='IndexSpecMainDiv']//img[contains(@title,'%s')]" %
-                                    title).attr('src')
+        img_ref = card_selector.select("./tr/td/table/tr/td/a/img").attr('src')
         self.download_image(img_ref)
         self.logger.debug('Image reference: %s' % img_ref)
         # Сохраняем товар в базу данных
@@ -129,26 +129,23 @@ class Svetservis(object):
     def scrap_category(self, category_ref):
         g = Grab()
         try:
-            resp = g.go(category_ref)
+            g.go(category_ref)
+        except:
+            self.logger.warn('Can not access %s' % category_ref)
+            return None
+        # Переходим по ссылке "Все позиции"
+        category_all_ref = g.doc.select(u'//a[@title="Все позиции"]').attr('href')
+        print 'все позиции: ' + category_all_ref.encode('utf-8')
+        try:
+            g.go(category_all_ref)
         except:
             self.logger.warn('Can not access %s' % category_ref)
             return None
         cards = g.doc.select('//div[@class="IndexSpecMainDiv"]/table/tr/td/table')
-        print g.doc.select('//div[@class="IndexSpecMainDiv"]/table/tr/td/table').html()
+        # Обходим все товары в категории
         for card in cards:
-            #print card.select('./table/tr/td/tr/div/a[@class="product_name"]').exists()
-            print card.select('//table').exists()
+            self.get_goods(card)
 
-        # Получаем название товара
-        #titles = g.doc.select('//div[@class="IndexSpecMainDiv"]//a[@class="product_name"]')
-        #for title in titles:
-        #    self.logger.debug('title: %s' % title.text())
-        #    self.get_goods(g, title.text())
-
-
-
-
-#document, errors = tidy_document('''<p>f&otilde;o <img src="bar.jpg">''', options={'numeric-entities':1})
 
 s = Svetservis()
 #s.get_categories()
