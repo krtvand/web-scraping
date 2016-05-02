@@ -7,7 +7,7 @@ import re
 import sys
 import os
 
-from sqlalchemy import Column, DateTime, String, Integer, ForeignKey, func
+from sqlalchemy import Column, DateTime, String, Integer, ForeignKey, func, Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -22,6 +22,8 @@ class Goods(Base):
     name_from_price = Column(String(1000))
     img_ref = Column(String(1000))
     category = Column(String(1000))
+    price = Column(Float)
+    description = Column(String(100000))
     def __repr__(self):
         return "<Goods('%s','%s', '%s', '%s', '%s')>" % \
                (self.articul, self.name_from_site,
@@ -70,7 +72,8 @@ class Svetservis(object):
                 self.logger.debug(category_level_2_selector.text())
                 for category_level_3_selector in ul_level_1_selector.select('./ul[' + str(li_index) + ']/li'):
                     category_level_3 = Category(category_level_3_selector.text())
-                    category_level_3.link = ul_level_1_selector.select('./ul[' + str(li_index) +
+                    category_level_3.link = 'http://store.svetservis.ru' + \
+                                            ul_level_1_selector.select('./ul[' + str(li_index) +
                                                                        ']/li/a').attr('href')
                     category_level_2.children.append(category_level_3)
                     self.logger.debug(category_level_3_selector.text())
@@ -101,55 +104,89 @@ class Svetservis(object):
 
     def get_goods(self, card_selector):
         # Получаем наименование товара
-        title = card_selector.select('./tr/td/table/tr/div/a[@class="product_name"]').text()
-        self.logger.debug('Title: %s' % title)
+        try:
+            title = card_selector.select('./tr/td/table/tr/div/a[@class="product_name"]').text()
+            self.logger.debug('Title: %s' % title)
+        except:
+            self.logger.warning('Data not found for "title"')
+            title = ''
         # Получаем артикул товара
-        articul = card_selector.select(u'./tr/td/div[starts-with(.,"Артикул")]').text()
-        articul = articul.split(' ')[-1]
-        self.logger.debug('Articul: %s' % articul)
+        try:
+            articul = card_selector.select(u'./tr/td/div[starts-with(.,"Артикул")]').text()
+            articul = articul.split(' ')[-1]
+            self.logger.debug('Articul: %s' % articul)
+        except:
+            self.logger.critical('Data not found for "articul"')
+            return None
         # Получаем наименование товара как оно указано в прайсе из элемента "Характеристики"
-        name_from_price = card_selector.select('./tr/td/div[@class="prodDesc"]').text()
-        self.logger.debug('Name from price: %s' % name_from_price)
+        try:
+            name_from_price = card_selector.select('./tr/td/div[@class="prodDesc"]').text()
+            self.logger.debug('Name from price: %s' % name_from_price)
+        except:
+            self.logger.warning('Data not found for "name_from_price"')
+            name_from_price = ''
         # Получаем изображение товара
-        img_ref = card_selector.select("./tr/td/table/tr/td/a/img").attr('src')
-        self.download_image(img_ref)
-        self.logger.debug('Image reference: %s' % img_ref)
+        try:
+            img_ref = card_selector.select("./tr/td/table/tr/td/a/img").attr('src')
+            self.download_image(img_ref)
+            self.logger.debug('Image reference: %s' % img_ref)
+        except:
+            self.logger.warning('Problems with image downloading')
+            img_ref = ''
         # Сохраняем товар в базу данных
         goods = Goods(articul=articul.encode('utf-8'),
                       name_from_price=name_from_price.encode('utf-8'),
-                      name_from_site=title.encode('utf-8'),
-                      category='010102',img_ref=img_ref)
-        s = self.session()
-        s.merge(goods)
-        s.commit()
-
+                      name_from_site=title.encode('utf-8'), img_ref=img_ref.encode('utf-8'))
+        return goods
         # Получаем ссылку на каталог товаров в виде прайс листа
         #print self.g.doc.select(u'//div[@class="col-2"]//a[contains(.,"Прайс-лист каталога")]').attr('title')
 
-    def scrap_category(self, category_ref):
+    def scrap_category(self, category):
         g = Grab()
         try:
-            g.go(category_ref)
+            g.go(category.link)
         except:
-            self.logger.warn('Can not access %s' % category_ref)
+            self.logger.warn('Can not access %s' % category.link)
             return None
-        # Переходим по ссылке "Все позиции"
-        category_all_ref = g.doc.select(u'//a[@title="Все позиции"]').attr('href')
-        print 'все позиции: ' + category_all_ref.encode('utf-8')
+        # Переходим по ссылке "Все позиции", если в категории меньше 10 позиций,
+        #  то ссылка отсутствует, поэтому используем изначальную ссылку на категорию
+        try:
+            category_all_ref = g.doc.select(u'//a[@title="Все позиции"]').attr('href')
+        except:
+            self.logger.debug('Data not found for link "All goods"')
+            category_all_ref = category.link
         try:
             g.go(category_all_ref)
         except:
-            self.logger.warn('Can not access %s' % category_ref)
+            self.logger.warn('Can not access %s' % category.link)
             return None
-        cards = g.doc.select('//div[@class="IndexSpecMainDiv"]/table/tr/td/table')
-        # Обходим все товары в категории
+        try:
+            cards = g.doc.select('//div[@class="IndexSpecMainDiv"]/table/tr/td/table')
+        except:
+            self.logger.critical('Can not get cards for goods in category %s' % category.link)
+            return None
+        # Обходим все товары в категории и сразу сохраняем их в БД
         for card in cards:
-            self.get_goods(card)
+            goods = self.get_goods(card)
+            if goods is not None:
+                goods.category = category.name.encode('utf-8')
+                s = self.session()
+                s.merge(goods)
+                s.commit()
+
+    def scrap_all(self):
+        self.get_categories()
+        for category in self.categories:
+            for it in category.children:
+                for el in it.children:
+                    #self.scrap_category(el)
+                    print '%s %s %s ' % (el.name, el.link, len(el.children))
 
 
 s = Svetservis()
 #s.get_categories()
-s.scrap_category('http://store.svetservis.ru/shop/CID_200027051.html')
+#s.scrap_category('http://store.svetservis.ru/shop/CID_200027051.html')
+s.scrap_all()
 
 """
 for category in s.categories:
