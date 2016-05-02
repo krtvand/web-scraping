@@ -6,7 +6,9 @@ import logging
 import re
 import sys
 import os
+import csv
 
+import xlrd
 from sqlalchemy import Column, DateTime, String, Integer, ForeignKey, func, Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import create_engine
@@ -22,8 +24,10 @@ class Goods(Base):
     name_from_price = Column(String(1000))
     img_ref = Column(String(1000))
     category = Column(String(1000))
-    price = Column(Float)
+    wholesale_price = Column(Float)
     description = Column(String(100000))
+    unit = Column(String(10))
+
     def __repr__(self):
         return "<Goods('%s','%s', '%s', '%s', '%s')>" % \
                (self.articul, self.name_from_site,
@@ -37,6 +41,8 @@ class Category(object):
         self.children = []
 
 class Svetservis(object):
+
+
     def __init__(self):
         self.g = Grab()
         self.categories = []
@@ -53,13 +59,46 @@ class Svetservis(object):
         self.session = sessionmaker()
         self.session.configure(bind=self.engine)
         Base.metadata.create_all(self.engine)
+
+    def read_price(self):
+        try:
+            rb = xlrd.open_workbook('/home/andrew/price.xls')
+        except:
+            self.logger.critical('Can not open price file!')
+            return
+        goods = Goods()
+        sheet = rb.sheet_by_index(0)
+        for row_index in range(sheet.nrows):
+            # Сохраняем артикул в нужном формате, и пропускаем строку,
+            # если нет записи для артикула
+            articul = sheet.row(row_index)[1].value
+            if isinstance(articul, float):
+                goods.articul = ('%07.0f' % articul)
+            else:
+                continue
+            name = sheet.row(row_index)[2].value
+            # Удаляем пробельные символы в начале и в кноце строки
+            name = name.lstrip().rstrip()
+            goods.name_from_price = name.encode('utf-8')
+            price = sheet.row(row_index)[3].value
+            goods.wholesale_price = price
+            unit = sheet.row(row_index)[4].value.lstrip().rstrip()
+            goods.unit = unit.encode('utf-8')
+            s = self.session()
+            s.merge(goods)
+            s.commit()
+
     def get_categories(self):
+        """ Получаем все категории товаров
+        """
         try:
             self.g.go('http://store.svetservis.ru/map/')
         except:
             self.logger.warn('Can not access http://store.svetservis.ru/map/')
         ul_level_1_number = 1
         ul_level_1_selectors = self.g.doc.select('//div[@class="pod_cart"]/ul')
+        with open('/home/andrew/temp.html', 'w') as f:
+            f.write(ul_level_1_selectors.html().encode('cp1251'))
         for ul_level_1_selector in ul_level_1_selectors:
             category_level_1 = Category(ul_level_1_number)
             self.categories.append(category_level_1)
@@ -72,13 +111,16 @@ class Svetservis(object):
                 self.logger.debug(category_level_2_selector.text())
                 for category_level_3_selector in ul_level_1_selector.select('./ul[' + str(li_index) + ']/li'):
                     category_level_3 = Category(category_level_3_selector.text())
-                    category_level_3.link = 'http://store.svetservis.ru' + \
-                                            ul_level_1_selector.select('./ul[' + str(li_index) +
-                                                                       ']/li/a').attr('href')
+                    category_level_3.link = 'http://store.svetservis.ru' + category_level_3_selector.select('./a').attr('href')
                     category_level_2.children.append(category_level_3)
-                    self.logger.debug(category_level_3_selector.text())
+                    self.logger.debug(category_level_3.name)
                 li_index += 1
+
     def download_image(self, img_ref):
+        """Загружаем изображение товара в такую же папку, как она лежала на сервере
+        :param img_ref: ссылка на изображение
+        :return:
+        """
         img_ref = 'http://store.svetservis.ru' + img_ref
         g = Grab()
         try:
@@ -103,16 +145,20 @@ class Svetservis(object):
             return None
 
     def get_goods(self, card_selector):
+        """Парсим одну товарную позицию
+        :param card_selector: селектор таблицы, в которой описан товар
+        :return: экземпляр класса Товар (Goods)
+        """
         # Получаем наименование товара
         try:
-            title = card_selector.select('./tr/td/table/tr/div/a[@class="product_name"]').text()
+            title = card_selector.select('./tr/td/table/tr/div/a[@class="product_name"]').text().lstrip().rstrip()
             self.logger.debug('Title: %s' % title)
         except:
             self.logger.warning('Data not found for "title"')
             title = ''
         # Получаем артикул товара
         try:
-            articul = card_selector.select(u'./tr/td/div[starts-with(.,"Артикул")]').text()
+            articul = card_selector.select(u'./tr/td/div[starts-with(.,"Артикул")]').text().lstrip().rstrip()
             articul = articul.split(' ')[-1]
             self.logger.debug('Articul: %s' % articul)
         except:
@@ -120,7 +166,7 @@ class Svetservis(object):
             return None
         # Получаем наименование товара как оно указано в прайсе из элемента "Характеристики"
         try:
-            name_from_price = card_selector.select('./tr/td/div[@class="prodDesc"]').text()
+            name_from_price = card_selector.select('./tr/td/div[@class="prodDesc"]').text().lstrip().rstrip()
             self.logger.debug('Name from price: %s' % name_from_price)
         except:
             self.logger.warning('Data not found for "name_from_price"')
@@ -142,6 +188,10 @@ class Svetservis(object):
         #print self.g.doc.select(u'//div[@class="col-2"]//a[contains(.,"Прайс-лист каталога")]').attr('title')
 
     def scrap_category(self, category):
+        """ Парсим одну категорию 3 уровня
+        :param category: экземпляр класса "Категория"
+        :return: В случае ошибки возвращает None, в случае успеха ничего не возвращает
+        """
         g = Grab()
         try:
             g.go(category.link)
@@ -175,24 +225,57 @@ class Svetservis(object):
                 s.commit()
 
     def scrap_all(self):
+        """ Парсим весь сайт, проходя через каждую категорию 3 уровня
+        """
         self.get_categories()
         for category in self.categories:
             for it in category.children:
                 for el in it.children:
-                    #self.scrap_category(el)
-                    print '%s %s %s ' % (el.name, el.link, len(el.children))
+                    pass
+                    self.scrap_category(el)
 
+    def create_csv(self):
+        with open('/home/andrew/my_price.csv', 'wb') as f:
+            wr = csv.writer(f, delimiter=';')
+            wr.writerow(['ID',
+                         'Active (0/1)', 'Name *', 'Categories (x,y,z...)',
+                         'Price tax excluded or Price tax included',
+                         'Tax rules ID', 'Wholesale price',
+                         'On sale (0/1)', 'Discount amount',
+                         'Discount percent', 'Discount from (yyyy-mm-dd)',
+                         'Discount to (yyyy-mm-dd)', 'Reference #',
+                         'Supplier reference #', 'Supplier',
+                         'Manufacturer','EAN13',
+                         'UPC', 'Ecotax', 'Width', 'Height',
+                         'Depth', 'Weight', 'Quantity',
+                         'Minimal quantity', 'Visibility',
+                         'Additional shipping cost',
+                         'Unity', 'Unit price', 'Short description',
+                         'Description', 'Tags (x,y,z...)',
+                         'Meta title', 'Meta keywords',
+                         'Meta description', 'URL rewritten',
+                         'Text when in stock', 'Text when backorder allowed',
+                         'Available for order (0 = No, 1 = Yes)',
+                         'Product available date', 'Product creation date',
+                         'Show price (0 = No, 1 = Yes)', 'Image URLs (x,y,z...)',
+                         'Delete existing images (0 = No, 1 = Yes)',
+                         'Feature(Name:Value:Position)'])
+            empty_row = ['' for x in range(46)]
+            s = self.session()
+            for goods in s.query(Goods)[1:10]:
+                row = empty_row
+                row[0] = goods.articul.encode('utf-8')
+                row[1] = '1'
+                row[2] = goods.name_from_price
+                row[3] = goods.category
+                row[4] = goods.wholesale_price * 1.2
+                row[6] = goods.wholesale_price
+                row[23] = 10
+                row[38] = 1
+                row[42] = goods.img_ref
 
+                wr.writerow(row)
 s = Svetservis()
-#s.get_categories()
-#s.scrap_category('http://store.svetservis.ru/shop/CID_200027051.html')
 s.scrap_all()
-
-"""
-for category in s.categories:
-    print '%s %s %s ' % (category.name, category.link, len(category.children))
-    for it in category.children:
-        print '%s %s %s ' % (it.name, it.link, len(it.children))
-        for el in it.children:
-            print '%s %s %s ' % (el.name, el.link, len(el.children))
-"""
+#s.read_price()
+#s.create_csv()
