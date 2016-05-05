@@ -36,6 +36,7 @@ class Goods(Base):
 
 class Category(object):
     def __init__(self, name):
+        self.id = None
         self.name = name
         self.link = ''
         self.children = []
@@ -95,25 +96,31 @@ class Svetservis(object):
             self.g.go('http://store.svetservis.ru/map/')
         except:
             self.logger.warn('Can not access http://store.svetservis.ru/map/')
-        ul_level_1_number = 1
+        # Используем в качестве id категорий инкрементный индекс начиная с 10ти
+        category_id = 10
         ul_level_1_selectors = self.g.doc.select('//div[@class="pod_cart"]/ul')
-        with open('/home/andrew/temp.html', 'w') as f:
-            f.write(ul_level_1_selectors.html().encode('cp1251'))
-        for ul_level_1_selector in ul_level_1_selectors:
-            category_level_1 = Category(ul_level_1_number)
+        category_level_1_names = self.g.doc.select('//div[@class="pod_cart"]/p/b')
+
+        for ul_level_1_selector, category_level_1_name in zip(ul_level_1_selectors, category_level_1_names):
+            category_level_1 = Category(category_level_1_name.text())
+            category_level_1.id = category_id
+            category_id += 1
             self.categories.append(category_level_1)
-            ul_level_1_number += 1
             li_index = 1
-            self.logger.debug(category_level_1.name)
+            self.logger.debug('%s (id=%s)' % (category_level_1.name, category_level_1.id))
             for category_level_2_selector in ul_level_1_selector.select('./li'):
                 category_level_2 = Category(category_level_2_selector.text())
+                category_level_2.id = category_id
+                category_id += 1
                 category_level_1.children.append(category_level_2)
-                self.logger.debug(category_level_2_selector.text())
+                self.logger.debug('%s (id=%s)' % (category_level_2.name, category_level_2.id))
                 for category_level_3_selector in ul_level_1_selector.select('./ul[' + str(li_index) + ']/li'):
                     category_level_3 = Category(category_level_3_selector.text())
+                    category_level_3.id = category_id
+                    category_id += 1
                     category_level_3.link = 'http://store.svetservis.ru' + category_level_3_selector.select('./a').attr('href')
                     category_level_2.children.append(category_level_3)
-                    self.logger.debug(category_level_3.name)
+                    self.logger.debug('%s (id=%s)' % (category_level_3.name, category_level_3.id))
                 li_index += 1
 
     def download_image(self, img_ref):
@@ -121,20 +128,20 @@ class Svetservis(object):
         :param img_ref: ссылка на изображение
         :return:
         """
-        img_ref = 'http://store.svetservis.ru' + img_ref
+        #img_ref = 'http://store.svetservis.ru' + img_ref
         g = Grab()
         try:
-            resp = g.go(img_ref)
+            resp = g.go('http://store.svetservis.ru' + img_ref)
         except:
             self.logger.warn('Can not access %s' % img_ref)
             return None
         # Создаем у себя такую же директорию, как на сайте, например:
         # img_ref = /UserFiles/Image/010104_provod_ustanovochnyj_mednyj/09000395_1s.jpg
-        # img_directory ./UserFiles/Image/010104_provod_ustanovochnyj_mednyj/
-        img_directory = '.' + re.sub(r'[^/]*$','',img_ref)
+        # img_directory /var/www/html/UserFiles/Image/010104_provod_ustanovochnyj_mednyj/
+        img_directory = '/var/www/html' + re.sub(r'[^/]*$','',img_ref)
         if not os.path.exists(img_directory):
             os.makedirs(img_directory)
-        with open('.' + img_ref, 'w') as img:
+        with open('/var/www/html' + img_ref, 'w') as img:
                 img.write(resp.body)
 
     def get_goods_from_price_page(self, price_page_url):
@@ -176,13 +183,14 @@ class Svetservis(object):
             img_ref = card_selector.select("./tr/td/table/tr/td/a/img").attr('src')
             self.download_image(img_ref)
             self.logger.debug('Image reference: %s' % img_ref)
+            full_img_ref = '194.54.64.90' + img_ref
         except:
             self.logger.warning('Problems with image downloading')
             img_ref = ''
         # Сохраняем товар в базу данных
         goods = Goods(articul=articul.encode('utf-8'),
                       name_from_price=name_from_price.encode('utf-8'),
-                      name_from_site=title.encode('utf-8'), img_ref=img_ref.encode('utf-8'))
+                      name_from_site=title.encode('utf-8'), img_ref=full_img_ref.encode('utf-8'))
         return goods
         # Получаем ссылку на каталог товаров в виде прайс листа
         #print self.g.doc.select(u'//div[@class="col-2"]//a[contains(.,"Прайс-лист каталога")]').attr('title')
@@ -231,7 +239,6 @@ class Svetservis(object):
         for category in self.categories:
             for it in category.children:
                 for el in it.children:
-                    pass
                     self.scrap_category(el)
 
     def create_csv(self):
@@ -261,21 +268,53 @@ class Svetservis(object):
                          'Delete existing images (0 = No, 1 = Yes)',
                          'Feature(Name:Value:Position)'])
             empty_row = ['' for x in range(46)]
-            s = self.session()
-            for goods in s.query(Goods)[1:10]:
-                row = empty_row
-                row[0] = goods.articul.encode('utf-8')
-                row[1] = '1'
-                row[2] = goods.name_from_price
-                row[3] = goods.category
-                row[4] = goods.wholesale_price * 1.2
-                row[6] = goods.wholesale_price
-                row[23] = 10
-                row[38] = 1
-                row[42] = goods.img_ref
+            session = self.session()
+            for goods in session.query(Goods):
+                if goods.wholesale_price and goods.articul and \
+                        goods.name_from_price and goods.category:
+                    row = empty_row
+                    row[0] = goods.articul.encode('utf-8')
+                    row[1] = '1'
+                    row[2] = goods.name_from_price
+                    row[3] = goods.category
+                    row[4] = goods.wholesale_price * 1.2
+                    row[6] = goods.wholesale_price
+                    row[12] = goods.articul
+                    row[13] = goods.articul
+                    row[23] = 10
+                    row[38] = 1
+                    # Временно, при следующем парсинге убрать IP
+                    row[42] = 'http://194.54.64.90' + goods.img_ref
+                    wr.writerow(row)
 
+    def create_cataloge_csv(self):
+        with open('/home/andrew/my_cataloge.csv', 'wb') as f:
+            wr = csv.writer(f, delimiter=';')
+            empty_row = ['' for x in range(11)]
+            wr.writerow(empty_row)
+            self.get_categories()
+            for category in self.categories:
+                row = empty_row
+                row[0] = category.id
+                row[2] = category.name.encode('utf-8')
+                row[3] = 1
+                row[4] = 0
                 wr.writerow(row)
+                for it in category.children:
+                    row = empty_row
+                    row[0] = it.id
+                    row[2] = it.name.encode('utf-8')
+                    row[3] = category.id
+                    row[4] = 0
+                    wr.writerow(row)
+                    for el in it.children:
+                        row = empty_row
+                        row[0] = el.id
+                        row[2] = el.name.encode('utf-8')
+                        row[3] = it.id
+                        row[4] = 0
+                        wr.writerow(row)
 s = Svetservis()
-s.scrap_all()
+#s.scrap_all()
 #s.read_price()
-#s.create_csv()
+s.create_cataloge_csv()
