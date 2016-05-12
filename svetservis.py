@@ -297,10 +297,12 @@ class Svetservis(object):
                 row = empty_row
                 row[0] = category.id
                 row[2] = category.name.encode('utf-8')
-                row[3] = 1
+                row[3] = 2
                 row[4] = 0
+                row[10] = 'http://194.54.64.90/UserFiles/categories/' + category.name.encode('utf-8') + '.jpg'
                 wr.writerow(row)
                 for it in category.children:
+                    empty_row = ['' for x in range(11)]
                     row = empty_row
                     row[0] = it.id
                     row[2] = it.name.encode('utf-8')
