@@ -1,10 +1,14 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+IMG_DIR = '/home/andrew/images'
 # TODO В базу записывается неправильный Replacement и не работает nextpage
 
 import logging
 import sys
+import re
+import os
+from multiprocessing import Pool
 
 from grab import Grab
 import pycurl
@@ -62,8 +66,8 @@ class Product(Base):
 
     def __repr__(self):
         return "<Goods('%s','%s', '%s', '%s', '%s')>" % \
-               (self.articul, self.name_from_site,
-                self.name_from_price, self.img_ref,
+               (self.articul, self.name,
+                self.manufacturer, self.img_ref,
                 self.category)
 
 # Зададим параметры логгирования
@@ -116,14 +120,37 @@ def get_categories(g):
             logger.debug(category_level_2_selector.attr('href'))
             category_level_1.children.append(category_level_2)
 
-def grab_category(g, category, s):
+def download_image(g, link):
+    try:
+        path = re.sub('http://catalog.russvet.ru', '', link)
+        resp = g.go(link)
+        if not os.path.exists(IMG_DIR + re.sub(r'[^/]*$','',path)):
+            os.makedirs(IMG_DIR + re.sub(r'[^/]*$','',path))
+        with open(IMG_DIR + path, 'w') as f:
+            f.write(resp.body)
+        my_link = u'http://кабель-13.рф' + path.decode('utf-8')
+        return my_link
+    except Exception as e:
+        logger.warn('Error: %s %s' % (e.message, e.args))
+        return ''
+
+def grab_category(category):
     """ Парсим товары из категори второго уровня
     :type category: Category
     :type g: Grab
     :type s: SQL session
     """
     product = Product()
-
+    # Подключение к базе данных
+    engine = create_engine('mysql://root:8-9271821473@localhost/russvet')
+    Session = sessionmaker(bind=engine)
+    s = Session()
+    # Настроим параметры Grab
+    g = Grab()
+    #g.transport.curl.setopt(pycurl.HEADER, True)
+    g.transport.curl.setopt(pycurl.SSLCERT, '/scripts/web-scraping/rus-svet-cert.pem')
+    g.transport.curl.setopt(pycurl.SSLCERTPASSWD, 'null95f353bd')
+    g.cookies.load_from_file('/home/andrew/russvet_cookie')
     # Post запрос для отображения колонки брэндов
     try:
         g.go(category.link, post={'section' : "12405",
@@ -144,6 +171,17 @@ def grab_category(g, category, s):
                 logger.debug('Image: %s' % product.img_ref.decode('utf-8'))
             except:
                 logger.debug('No image')
+            try:
+                path = re.sub('http://catalog.russvet.ru', '', product.img_ref)
+                resp = g.go(product.img_ref)
+                if not os.path.exists(IMG_DIR + re.sub(r'[^/]*$','',path)):
+                    os.makedirs(IMG_DIR + re.sub(r'[^/]*$','',path))
+                with open(IMG_DIR + path, 'w') as f:
+                    f.write(resp.body)
+                #product.my_img = download_image(g, product.img_ref).encode('utf-8')
+                #logger.debug('My image: %s' % product.my_img.decode('utf-8'))
+            except:
+                logger.warn('Can not download image %s' % product.img_ref)
             try:
                 product.articul = product_selector.select('./td[3]').text().encode('utf-8')
                 logger.debug('Articul: %s' % product.articul.decode('utf-8'))
@@ -198,16 +236,25 @@ def grab_category(g, category, s):
             break
         else:
             try:
-                next_link = 'https://imarket.russvet.ru:5000/OA_HTML/' + \
-                            g.doc.select(u'//td[@class="tableRecordNav"]/a[starts-with(.,"Следующ")]').attr('href')
-                logger.debug('Next page %s' % next_link)
+                next_link = g.doc.select(u'//td[@class="tableRecordNav"]/a[starts-with(.,"Следующ")]').attr('href')
+                next_link = re.sub(r'^javascript.*?"', '', next_link)
+                next_link = 'https://imarket.russvet.ru:5000/OA_HTML/' + next_link
+                next_link = re.sub(r';.*?\?', '?', next_link)
+                next_link = re.sub(r'".*$',
+                                   '&showPositionWithZero=false&showPositionOnlyStore=false&showBrand=true&sortAscOrDesc=false&column=1',
+                                   next_link)
+                logger.debug('Next page: %s' % next_link)
                 g.go(next_link)
             except:
                 logger.warn('Can not go to the next page')
+                break
 
-logger.debug('Init...')
-g_l = init()
-category_l = Category('name')
-category_l.link = 'https://imarket.russvet.ru:5000/OA_HTML/ibeCCtpSctDspRte.jsp?section=11627&beginIndex=21&sitex=10082:52168:RU'
-session = Session()
-grab_category(g_l, category_l, session)
+def grab_category_level_1():
+    logger.debug('Init...')
+    g1 = init()
+    g1.cookies.save_to_file('/home/andrew/russvet_cookie')
+    category_l = Category('name')
+    category_l.link = 'https://imarket.russvet.ru:5000/OA_HTML/ibeCCtpSctDspRte.jsp?section=11627&beginIndex=21&sitex=10082:52168:RU'
+    grab_category(category_l)
+
+grab_category_level_1()
