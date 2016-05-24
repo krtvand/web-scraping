@@ -98,12 +98,12 @@ def init():
     g.doc.set_input_by_id('username', 'krtvand')
     g.doc.set_input_by_id('password', 'krtvand')
     g.doc.submit()
+    g.cookies.save_to_file('/home/andrew/russvet_cookie')
     return g
 def get_categories(g):
     """ Получаем все категории с сайта
     :param g: Grab
     """
-
     tree = etree.parse(SHORT_CATEGORY_LIST)
     # Парсим категории первого уровня
     category_level_1_selectors = g.doc.select('//td[@class="customCategory"]//a[@class="levelOne"]')
@@ -120,26 +120,42 @@ def get_categories(g):
             logger.debug(category_level_1_selector.attr('href'))
             categories.childrens.append(category_level_1)
             # Сохраняем ссылку на каталог в XML файл в атрибуте "Ссылка"
-            link_elem = etree.SubElement(xml_elem[0], u"Ссылка")
-            link_elem.text = category_level_1.link
-
+            xml_link_elem = xml_elem[0].find(u"Ссылка")
+            if xml_link_elem is not None:
+                xml_link_elem.text = category_level_1.link
+            else:
+                xml_link_elem = etree.SubElement(xml_elem[0], u"Ссылка")
+                xml_link_elem.text = category_level_1.link
     # Парсим категории второго уровня
     for category_level_1 in categories.childrens:
         g.go(category_level_1.link)
         for category_level_2_selector in g.doc.select('//td[@class="customCategory"]//a[@class="levelTwo"]'):
-            category_level_2 = Category(category_level_2_selector.text())
-            logger.debug('Level 2 %s' % category_level_2_selector.text())
-            category_level_2.link = category_level_2_selector.attr('href')
-            logger.debug(category_level_2_selector.attr('href'))
-            category_level_1.childrens.append(category_level_2)
+            # Проверяем, есть ли подкатегория в шашем сокращенном списке категорий
+            expr = u"//Группа[Наименование[text() = $name]]"
+            xml_elem = tree.xpath(expr, name = category_level_2_selector.text())
+            if xml_elem:
+                category_level_2 = Category(category_level_2_selector.text())
+                category_level_2.link = 'https://imarket.russvet.ru:5000/OA_HTML/' + \
+                                        category_level_2_selector.attr('href')
+                category_level_2.link = re.sub('amp;', '', category_level_2.link)
+                logger.debug(category_level_2.link)
+                category_level_1.childrens.append(category_level_2)
+                logger.debug('Level 2 %s' % category_level_2_selector.text())
+                # Сохраняем ссылку на каталог в XML файл в атрибуте "Ссылка"
+                xml_link_elem = xml_elem[0].find(u"Ссылка")
+                if xml_link_elem is not None:
+                    xml_link_elem.text = category_level_2.link
+                else:
+                    xml_link_elem = etree.SubElement(xml_elem[0], u"Ссылка")
+                    xml_link_elem.text = category_level_2.link
     with open(SHORT_CATEGORY_LIST, 'w') as f:
         f.write(etree.tostring(tree, pretty_print=True, encoding='utf-8'))
     return categories
 
-def download_image(g, link):
+def download_image(g1, link):
     try:
         path = re.sub('http://catalog.russvet.ru', '', link)
-        resp = g.go(link)
+        resp = g1.go(link)
         if not os.path.exists(IMG_DIR + re.sub(r'[^/]*$','',path)):
             os.makedirs(IMG_DIR + re.sub(r'[^/]*$','',path))
         with open(IMG_DIR + path, 'w') as f:
@@ -147,12 +163,12 @@ def download_image(g, link):
         my_link = u'http://кабель-13.рф' + path.decode('utf-8')
         return my_link
     except Exception as e:
-        logger.warn('Error: %s %s' % (e.message, e.args))
+        logger.warn('Error when downloading image %s: %s %s' % (link, e.message, e.args))
         return ''
 
-def grab_category(category):
+def grab_category(category_link):
     """ Парсим товары из категори второго уровня
-    :type category: Category
+    :type string: Category_link
     :type g: Grab
     :type s: SQL session
     """
@@ -169,15 +185,16 @@ def grab_category(category):
     g.cookies.load_from_file('/home/andrew/russvet_cookie')
     # Post запрос для отображения колонки брэндов
     try:
-        g.go(category.link, post={'showPositionWithZero' : "false",
+        resp = g.go(category_link, post={'showPositionWithZero' : "false",
                                   'showPositionOnlyStore' : "false",
                                   'showBrand' : "true",
                                   'column' : "1",
                                   'radio' : "on",
                                   'sortAscOrDesc' : "false"})
+        with open('/home/andrew/test1.html', 'w') as f:
+            f.write(resp.body)
     except:
-        logger.warn('Can not open category page %s' % category.link)
-
+        logger.warn('Can not open category page %s' % category_link)
     while True:
         for product_selector in g.doc.select('//table[@class="OraBGAccentDark"]//tr[starts-with(@class,"tab-row")]'):
             try:
@@ -186,7 +203,7 @@ def grab_category(category):
             except:
                 logger.debug('No image')
             try:
-                product.my_img = download_image(g, product.img_ref).encode('utf-8')
+                product.my_img = download_image(g.clone(), product.img_ref).encode('utf-8')
                 logger.debug('My image: %s' % product.my_img.decode('utf-8'))
             except:
                 logger.warn('Can not download image %s' % product.img_ref)
@@ -237,10 +254,12 @@ def grab_category(category):
                 logger.debug('Manufacturer: %s' % product.manufacturer.decode('utf-8'))
             except:
                 logger.debug('No manufacturer')
-                logger.debug('')
+            logger.debug('')
             s.merge(product)
             s.commit()
+        # Переходим на следующую страницу товаров в катологе
         if not g.doc.select(u'//td[@class="tableRecordNav"]/a[starts-with(.,"Следующ")]').exists():
+            logger.debug('Next link not exists')
             break
         else:
             try:
@@ -259,23 +278,16 @@ def grab_category(category):
 
 def grab_all():
     logger.debug('Init...')
-    g1 = init()
-    g1.cookies.save_to_file('/home/andrew/russvet_cookie')
+    init()
     tree = etree.parse(SHORT_CATEGORY_LIST)
     root = tree.getroot()
-    short_category_list = root.iter(u'Наименование')
-    print short_category_list
-    root_category = get_categories(g1)
-    for category_l1 in root_category.childrens:
-        logger.info('Category l1: %s' % category_l1.name)
-        if category_l1.name in short_category_list:
-            for category_l2 in category_l1.childrens:
-                logger.info('Category l2: %s' % category_l2.name)
-                if category_l2.name in short_category_list:
-                    grab_category(category_l2)
-    #category_l = Category('name')
-    #category_l.link = 'https://imarket.russvet.ru:5000/OA_HTML/ibeCCtpSctDspRte.jsp?section=11627&beginIndex=21&sitex=10082:52168:RU'
-    #grab_category(category_l)
+    category_l1_elems = tree.xpath(u"/Группы/Группа")
+    print len(category_l1_elems)
+    for category_l1 in category_l1_elems:
+        logger.info('Category l1: %s' % category_l1.find(u'Наименование').text)
+        print len(category_l1.xpath(u"Группы/Группа"))
+        for category_l2 in category_l1.xpath(u"Группы/Группа"):
+            logger.info('Category l2: %s' % category_l2.find(u'Наименование').text)
+            grab_category(category_l2.find(u'Ссылка').text)
 
-g = init()
-get_categories(g)
+grab_all()
