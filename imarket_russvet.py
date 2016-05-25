@@ -67,14 +67,14 @@ class Product(Base):
         self.charact_downloaded = False
 
     def __repr__(self):
-        return "<Goods('%s','%s', '%s', '%s', '%s')>" % \
+        return "<Product('%s','%s', '%s', '%s', '%s')>" % \
                (self.articul, self.name,
                 self.manufacturer, self.img_ref,
                 self.category)
 
 # Зададим параметры логгирования
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 formatter = logging.Formatter(u'%(filename)s[LINE:%(lineno)d]# '
                               u'%(levelname)-8s [%(asctime)s]  %(message)s')
 console_handler = logging.StreamHandler(sys.stdout)
@@ -163,7 +163,7 @@ def download_image(g1, link):
         my_link = u'http://кабель-13.рф' + path.decode('utf-8')
         return my_link
     except Exception as e:
-        logger.warn('Error when downloading image %s: %s %s' % (link, e.message, e.args))
+        logger.warn('Error when downloading image %s: %s %s' % (link.decode('utf-8'), e.message, e.args))
         return ''
 
 def grab_category(category_link):
@@ -172,7 +172,6 @@ def grab_category(category_link):
     :type g: Grab
     :type s: SQL session
     """
-    product = Product()
     # Подключение к базе данных
     engine = create_engine('mysql://root:8-9271821473@localhost/russvet')
     Session = sessionmaker(bind=engine)
@@ -198,23 +197,33 @@ def grab_category(category_link):
     while True:
         for product_selector in g.doc.select('//table[@class="OraBGAccentDark"]//tr[starts-with(@class,"tab-row")]'):
             try:
-                product.img_ref = product_selector.select('./td[2]/a').attr('id').encode('utf-8')
-                logger.debug('Image: %s' % product.img_ref.decode('utf-8'))
+                articul = product_selector.select('./td[3]').text().encode('utf-8')
+                logger.debug('Articul: %s' % articul.decode('utf-8'))
             except:
-                logger.debug('No image')
-            try:
-                product.my_img = download_image(g.clone(), product.img_ref).encode('utf-8')
-                logger.debug('My image: %s' % product.my_img.decode('utf-8'))
-            except:
-                logger.warn('Can not download image %s' % product.img_ref)
-            try:
-                product.articul = product_selector.select('./td[3]').text().encode('utf-8')
-                logger.debug('Articul: %s' % product.articul.decode('utf-8'))
-            except:
-                logger.debug('No articul')
+                logger.warning('No articul')
+                continue
+            product = s.query(Product).filter_by(articul=articul).first()
+            if product is None:
+                product = Product()
+                product.articul = articul
+            else:
+                logger.debug('Product %s alredy in sql' % product.name.decode('utf-8'))
+            if not product.img_ref:
+                try:
+                    product.img_ref = product_selector.select('./td[2]/a').attr('id').encode('utf-8')
+                    logger.debug('Image: %s' % product.img_ref.decode('utf-8'))
+                except:
+                    logger.debug('No image')
+            # Если имеется ссылка на изображение и но оно до сих пор не загружено, скачиваем его
+            if not product.my_img and product.img_ref:
+                try:
+                    product.my_img = download_image(g.clone(), product.img_ref).encode('utf-8')
+                    logger.debug('My image: %s' % product.my_img.decode('utf-8'))
+                except:
+                    logger.warn('Can not download image %s' % product.img_ref)
             try:
                 product.name = product_selector.select('./td[4]').text().encode('utf-8')
-                logger.debug('Name: %s' % product.name.decode('utf-8'))
+                logger.info('Name: %s' % product.name.decode('utf-8'))
             except:
                 logger.debug('No name')
             try:
@@ -286,8 +295,11 @@ def grab_all():
     for category_l1 in category_l1_elems:
         logger.info('Category l1: %s' % category_l1.find(u'Наименование').text)
         print len(category_l1.xpath(u"Группы/Группа"))
-        for category_l2 in category_l1.xpath(u"Группы/Группа"):
-            logger.info('Category l2: %s' % category_l2.find(u'Наименование').text)
-            grab_category(category_l2.find(u'Ссылка').text)
+        p = Pool(5)
+        category_l2_list = [x.text for x in category_l1.xpath(u"Группы/Группа/Ссылка")]
+        p.map(grab_category, category_l2_list)
+        #for category_l2 in category_l1.xpath(u"Группы/Группа"):
+        #    logger.info('Category l2: %s' % category_l2.find(u'Наименование').text)
+        #    grab_category(category_l2.find(u'Ссылка').text)
 
 grab_all()
