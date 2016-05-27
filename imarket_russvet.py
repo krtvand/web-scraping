@@ -3,13 +3,16 @@
 
 SHORT_CATEGORY_LIST = '/scripts/web-scraping/short_category_list.xml'
 IMG_DIR = '/home/andrew/images'
-# TODO В базу записывается неправильный Replacement и не работает nextpage
+# TODO сохранять категорию для товара
 
 import logging
 import sys
 import re
 import os
 from multiprocessing import Pool
+from itertools import izip_longest
+import time
+import csv
 
 from grab import Grab
 import pycurl
@@ -17,6 +20,7 @@ from sqlalchemy import Column, DateTime, String, Integer, ForeignKey, func, Floa
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import NullPool
 from lxml import etree
 
 class Category(object):
@@ -81,14 +85,13 @@ console_handler = logging.StreamHandler(sys.stdout)
 console_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
 # Подключение к базе данных
-engine = create_engine('mysql://root:8-9271821473@localhost/russvet')
-Session = sessionmaker(bind=engine)
+engine = create_engine('mysql://root:8-9271821473@localhost/russvet', poolclass=NullPool)
 Base.metadata.create_all(engine)
 
 # Авторизуемся на сайте
-def init():
-    g = Grab()
-    g.transport.curl.setopt(pycurl.HEADER, True)
+def login():
+    g = Grab(timeout=25)
+    #g.transport.curl.setopt(pycurl.HEADER, True)
     g.transport.curl.setopt(pycurl.SSLCERT, '/scripts/web-scraping/rus-svet-cert.pem')
     g.transport.curl.setopt(pycurl.SSLCERTPASSWD, 'null95f353bd')
     g.go('https://imarket.russvet.ru:5000')
@@ -166,34 +169,34 @@ def download_image(g1, link):
         logger.warn('Error when downloading image %s: %s %s' % (link.decode('utf-8'), e.message, e.args))
         return ''
 
-def grab_category(category_link):
+def grab_category(category_link, category_name):
     """ Парсим товары из категори второго уровня
-    :type string: Category_link
-    :type g: Grab
-    :type s: SQL session
+    :type category_link: Category_link
+    :type category_name: category_name
     """
+    engine.dispose()
+    g = login()
     # Подключение к базе данных
-    engine = create_engine('mysql://root:8-9271821473@localhost/russvet')
     Session = sessionmaker(bind=engine)
     s = Session()
     # Настроим параметры Grab
-    g = Grab()
+    #g = Grab(timeout=25)
     #g.transport.curl.setopt(pycurl.HEADER, True)
-    g.transport.curl.setopt(pycurl.SSLCERT, '/scripts/web-scraping/rus-svet-cert.pem')
-    g.transport.curl.setopt(pycurl.SSLCERTPASSWD, 'null95f353bd')
-    g.cookies.load_from_file('/home/andrew/russvet_cookie')
+    #g.transport.curl.setopt(pycurl.SSLCERT, '/scripts/web-scraping/rus-svet-cert.pem')
+    #g.transport.curl.setopt(pycurl.SSLCERTPASSWD, 'null95f353bd')
+    #g.cookies.load_from_file('/home/andrew/russvet_cookie')
     # Post запрос для отображения колонки брэндов
     try:
-        resp = g.go(category_link, post={'showPositionWithZero' : "false",
+        g.go(category_link, post={'showPositionWithZero' : "false",
                                   'showPositionOnlyStore' : "false",
                                   'showBrand' : "true",
                                   'column' : "1",
                                   'radio' : "on",
                                   'sortAscOrDesc' : "false"})
-        with open('/home/andrew/test1.html', 'w') as f:
-            f.write(resp.body)
-    except:
-        logger.warn('Can not open category page %s' % category_link)
+    except Exception as e:
+        logger.warn('Can not open category page %s: %s %s' % (category_link, e.message, e.args))
+        return None
+    number_of_products = 0
     while True:
         for product_selector in g.doc.select('//table[@class="OraBGAccentDark"]//tr[starts-with(@class,"tab-row")]'):
             try:
@@ -223,7 +226,7 @@ def grab_category(category_link):
                     logger.warn('Can not download image %s' % product.img_ref)
             try:
                 product.name = product_selector.select('./td[4]').text().encode('utf-8')
-                logger.info('Name: %s' % product.name.decode('utf-8'))
+                logger.debug('Name: %s' % product.name.decode('utf-8'))
             except:
                 logger.debug('No name')
             try:
@@ -263,9 +266,15 @@ def grab_category(category_link):
                 logger.debug('Manufacturer: %s' % product.manufacturer.decode('utf-8'))
             except:
                 logger.debug('No manufacturer')
+            product.category = category_name.encode('utf-8')
             logger.debug('')
             s.merge(product)
             s.commit()
+            if product.available_quantity == 0:
+                logger.info('Parsing %s category finished' % category_name)
+                return
+        number_of_products += 20
+        logger.info('%s parsed %s products' % (category_name, number_of_products))
         # Переходим на следующую страницу товаров в катологе
         if not g.doc.select(u'//td[@class="tableRecordNav"]/a[starts-with(.,"Следующ")]').exists():
             logger.debug('Next link not exists')
@@ -284,20 +293,123 @@ def grab_category(category_link):
             except:
                 logger.warn('Can not go to the next page')
                 break
+        s.close()
+        engine.dispose()
+        return True
+
+
+def create_csv(self):
+    with open('/home/andrew/my_price.csv', 'wb') as f:
+        wr = csv.writer(f, delimiter=';')
+        wr.writerow(['ID',
+                     'Active (0/1)', 'Name *', 'Categories (x,y,z...)',
+                     'Price tax excluded or Price tax included',
+                     'Tax rules ID', 'Wholesale price',
+                     'On sale (0/1)', 'Discount amount',
+                     'Discount percent', 'Discount from (yyyy-mm-dd)',
+                     'Discount to (yyyy-mm-dd)', 'Reference #',
+                     'Supplier reference #', 'Supplier',
+                     'Manufacturer', 'EAN13',
+                     'UPC', 'Ecotax', 'Width', 'Height',
+                     'Depth', 'Weight', 'Quantity',
+                     'Minimal quantity', 'Visibility',
+                     'Additional shipping cost',
+                     'Unity', 'Unit price', 'Short description',
+                     'Description', 'Tags (x,y,z...)',
+                     'Meta title', 'Meta keywords',
+                     'Meta description', 'URL rewritten',
+                     'Text when in stock', 'Text when backorder allowed',
+                     'Available for order (0 = No, 1 = Yes)',
+                     'Product available date', 'Product creation date',
+                     'Show price (0 = No, 1 = Yes)', 'Image URLs (x,y,z...)',
+                     'Delete existing images (0 = No, 1 = Yes)',
+                     'Feature(Name:Value:Position)'])
+        empty_row = ['' for x in range(46)]
+        Session = sessionmaker(bind=engine)
+        s = Session()
+        for product in s.query(Product):
+            if product.wholesale_price > 0 and product.articul:
+                row = empty_row
+                row[0] = product.articul.encode('utf-8')
+                row[1] = '1'
+                row[2] = product.name.encode('utf-8')
+                row[3] = product.category.encode('utf-8')
+                row[4] = product.wholesale_price * 1.2
+                row[6] = product.wholesale_price
+                row[12] = product.articul.encode('utf-8')
+                row[13] = product.articul.encode('utf-8')
+                row[23] = product.available_quantity
+                row[38] = 1
+                # Временно, при следующем парсинге убрать IP
+                row[42] = product.my_img.encode('utf-8')
+                wr.writerow(row)
+
+
+def create_cataloge_csv(self):
+    with open('/home/andrew/my_cataloge.csv', 'wb') as f:
+        wr = csv.writer(f, delimiter=';')
+        empty_row = ['' for x in range(11)]
+        wr.writerow(empty_row)
+        self.get_categories()
+        for category in self.categories:
+            row = empty_row
+            row[0] = category.id
+            row[2] = category.name.encode('utf-8')
+            row[3] = 2
+            row[4] = 0
+            row[10] = 'http://194.54.64.90/UserFiles/categories/' + category.name.encode('utf-8') + '.jpg'
+            wr.writerow(row)
+            for it in category.children:
+                empty_row = ['' for x in range(11)]
+                row = empty_row
+                row[0] = it.id
+                row[2] = it.name.encode('utf-8')
+                row[3] = category.id
+                row[4] = 0
+                wr.writerow(row)
+                for el in it.children:
+                    row = empty_row
+                    row[0] = el.id
+                    row[2] = el.name.encode('utf-8')
+                    row[3] = it.id
+                    row[4] = 0
+                    wr.writerow(row)
+
+def grab_category_helper(args):
+    return grab_category(*args)
+
+def grouper(iterable, n, fillvalue=None):
+    "Collect data into fixed-length chunks or blocks"
+    # grouper('ABCDEFG', 3, 'x') --> ABC DEF Gxx
+    args = [iter(iterable)] * n
+    return izip_longest(fillvalue=fillvalue, *args)
 
 def grab_all():
     logger.debug('Init...')
-    init()
+    login()
     tree = etree.parse(SHORT_CATEGORY_LIST)
     root = tree.getroot()
     category_l1_elems = tree.xpath(u"/Группы/Группа")
     print len(category_l1_elems)
-    for category_l1 in category_l1_elems:
-        logger.info('Category l1: %s' % category_l1.find(u'Наименование').text)
+    p = Pool(10)
+    for category_l1 in category_l1_elems[1:]:
+        category_l1_name = category_l1.find(u'Наименование').text
+        logger.info('Category l1: %s' % category_l1_name)
         print len(category_l1.xpath(u"Группы/Группа"))
-        p = Pool(5)
-        category_l2_list = [x.text for x in category_l1.xpath(u"Группы/Группа/Ссылка")]
-        p.map(grab_category, category_l2_list)
+
+        job_args = zip([x.text for x in category_l1.xpath(u"Группы/Группа/Ссылка")],
+                       [x.text for x in category_l1.xpath(u"Группы/Группа/Наименование")])
+        p.map(grab_category_helper, job_args)
+        logger.info('Sleep for 5 minut...')
+        time.sleep(300)
+        """
+        for chunk in grouper(job_args, 10):
+            p = Pool(10)
+            p.map(grab_category_helper, chunk)
+            logger.info('Sleep for 1 minut...')
+            time.sleep(60)
+        """
+
         #for category_l2 in category_l1.xpath(u"Группы/Группа"):
         #    logger.info('Category l2: %s' % category_l2.find(u'Наименование').text)
         #    grab_category(category_l2.find(u'Ссылка').text)
