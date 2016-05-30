@@ -392,7 +392,7 @@ def grab_all():
     category_l1_elems = tree.xpath(u"/Группы/Группа")
     print len(category_l1_elems)
     p = Pool(10)
-    for category_l1 in category_l1_elems[1:]:
+    for category_l1 in category_l1_elems:
         category_l1_name = category_l1.find(u'Наименование').text
         logger.info('Category l1: %s' % category_l1_name)
         print len(category_l1.xpath(u"Группы/Группа"))
