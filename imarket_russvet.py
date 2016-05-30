@@ -2,8 +2,7 @@
 # -*- coding: utf-8 -*-
 
 SHORT_CATEGORY_LIST = '/scripts/web-scraping/short_category_list.xml'
-IMG_DIR = '/home/andrew/images'
-# TODO сохранять категорию для товара
+IMG_DIR = '/var/www/html/images'
 
 import logging
 import sys
@@ -157,13 +156,14 @@ def get_categories(g):
 
 def download_image(g1, link):
     try:
-        path = re.sub('http://catalog.russvet.ru', '', link)
         resp = g1.go(link)
+        path = re.sub('http://catalog.russvet.ru', '', link)
+        path = re.sub('http://www.elektro-online.de', '', path)
         if not os.path.exists(IMG_DIR + re.sub(r'[^/]*$','',path)):
             os.makedirs(IMG_DIR + re.sub(r'[^/]*$','',path))
         with open(IMG_DIR + path, 'w') as f:
             f.write(resp.body)
-        my_link = u'http://кабель-13.рф' + path.decode('utf-8')
+        my_link = u'http://кабель-13.рф/images' + path.decode('utf-8')
         return my_link
     except Exception as e:
         logger.warn('Error when downloading image %s: %s %s' % (link.decode('utf-8'), e.message, e.args))
@@ -297,8 +297,7 @@ def grab_category(category_link, category_name):
         engine.dispose()
         return True
 
-
-def create_csv(self):
+def create_csv():
     with open('/home/andrew/my_price.csv', 'wb') as f:
         wr = csv.writer(f, delimiter=';')
         wr.writerow(['ID',
@@ -330,50 +329,41 @@ def create_csv(self):
         for product in s.query(Product):
             if product.wholesale_price > 0 and product.articul:
                 row = empty_row
-                row[0] = product.articul.encode('utf-8')
+                row[0] = product.articul
                 row[1] = '1'
-                row[2] = product.name.encode('utf-8')
-                row[3] = product.category.encode('utf-8')
+                row[2] = product.name
+                row[3] = product.category
                 row[4] = product.wholesale_price * 1.2
                 row[6] = product.wholesale_price
-                row[12] = product.articul.encode('utf-8')
-                row[13] = product.articul.encode('utf-8')
+                row[12] = product.articul
+                row[13] = product.articul
                 row[23] = product.available_quantity
                 row[38] = 1
-                # Временно, при следующем парсинге убрать IP
-                row[42] = product.my_img.encode('utf-8')
+                row[42] = product.my_img
                 wr.writerow(row)
 
-
-def create_cataloge_csv(self):
+def create_cataloge_csv():
+    tree = etree.parse(SHORT_CATEGORY_LIST)
     with open('/home/andrew/my_cataloge.csv', 'wb') as f:
         wr = csv.writer(f, delimiter=';')
         empty_row = ['' for x in range(11)]
         wr.writerow(empty_row)
-        self.get_categories()
-        for category in self.categories:
+        for category_l1 in tree.xpath(u"/Группы/Группа"):
             row = empty_row
-            row[0] = category.id
-            row[2] = category.name.encode('utf-8')
+            row[0] = category_l1.find(u'Ид').text.encode('utf-8')
+            row[2] = category_l1.find(u'Наименование').text.encode('utf-8')
             row[3] = 2
             row[4] = 0
-            row[10] = 'http://194.54.64.90/UserFiles/categories/' + category.name.encode('utf-8') + '.jpg'
+            #row[10] = 'http://194.54.64.90/UserFiles/categories/' + category.name.encode('utf-8') + '.jpg'
             wr.writerow(row)
-            for it in category.children:
+            for category_l2 in category_l1.xpath(u"Группы/Группа"):
                 empty_row = ['' for x in range(11)]
                 row = empty_row
-                row[0] = it.id
-                row[2] = it.name.encode('utf-8')
-                row[3] = category.id
+                row[0] = category_l2.find(u'Ид').text.encode('utf-8')
+                row[2] = category_l2.find(u'Наименование').text.encode('utf-8')
+                row[3] = category_l1.find(u'Ид').text.encode('utf-8')
                 row[4] = 0
                 wr.writerow(row)
-                for el in it.children:
-                    row = empty_row
-                    row[0] = el.id
-                    row[2] = el.name.encode('utf-8')
-                    row[3] = it.id
-                    row[4] = 0
-                    wr.writerow(row)
 
 def grab_category_helper(args):
     return grab_category(*args)
@@ -415,3 +405,5 @@ def grab_all():
         #    grab_category(category_l2.find(u'Ссылка').text)
 
 grab_all()
+create_csv()
+create_cataloge_csv()
