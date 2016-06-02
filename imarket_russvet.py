@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-
-SHORT_CATEGORY_LIST = '/scripts/web-scraping/short_category_list.xml'
+# TODO Разобраться с разделителями значений в категориях
+SHORT_CATEGORY_LIST = '/home/andrew/short_category_list.xml'
 IMG_DIR = '/var/www/html/images'
 
 import logging
@@ -163,13 +163,13 @@ def download_image(g1, link):
             os.makedirs(IMG_DIR + re.sub(r'[^/]*$','',path))
         with open(IMG_DIR + path, 'w') as f:
             f.write(resp.body)
-        my_link = u'http://кабель-13.рф/images' + path.decode('utf-8')
+        my_link = u'http://localhost/images' + path.decode('utf-8')
         return my_link
     except Exception as e:
         logger.warn('Error when downloading image %s: %s %s' % (link.decode('utf-8'), e.message, e.args))
         return ''
 
-def grab_category(category_link, category_name):
+def grab_category(category_link, category_name, parent_category):
     """ Парсим товары из категори второго уровня
     :type category_link: Category_link
     :type category_name: category_name
@@ -266,10 +266,10 @@ def grab_category(category_link, category_name):
                 logger.debug('Manufacturer: %s' % product.manufacturer.decode('utf-8'))
             except:
                 logger.debug('No manufacturer')
-            product.category = category_name.encode('utf-8')
+            # Каждому товару присваиваем имя категории и родительской котегории через спец разделитель "$"
+            product.category = '$ '.join([category_name.encode('utf-8'), parent_category.encode('utf-8')])
             logger.debug('')
             s.merge(product)
-            s.commit()
             if product.available_quantity == 0:
                 logger.info('Parsing %s category finished' % category_name)
                 return
@@ -293,6 +293,7 @@ def grab_category(category_link, category_name):
             except:
                 logger.warn('Can not go to the next page')
                 break
+        s.commit()
         s.close()
         engine.dispose()
         return True
@@ -323,16 +324,23 @@ def create_csv():
                      'Show price (0 = No, 1 = Yes)', 'Image URLs (x,y,z...)',
                      'Delete existing images (0 = No, 1 = Yes)',
                      'Feature(Name:Value:Position)'])
-        empty_row = ['' for x in range(46)]
         Session = sessionmaker(bind=engine)
         s = Session()
         for product in s.query(Product):
-            if product.wholesale_price > 0 and product.articul:
-                row = empty_row
+            if product.articul:
+                row = ['' for x in range(46)]
                 row[0] = product.articul
-                row[1] = '1'
+                # Делаем товар активным только в случае наличия его на складе
+                if product.wholesale_price > 0 and product.available_quantity > 0:
+                    row[1] = '1'
+                else:
+                    row[1] = '0'
                 row[2] = product.name
-                row[3] = product.category
+                # Исключаем из названия запрещенные символы, которые не пропускает престашоп
+                # также меняем слэш на символ '|', т.к. слэш распознается как вложенная категория
+                if re.search(r'[;&]', product.category):
+                    product.category = re.sub(r'[;&]', ' ', product.category)
+                row[3] = re.sub('/', '|', product.category)
                 row[4] = product.wholesale_price * 1.2
                 row[6] = product.wholesale_price
                 row[12] = product.articul
@@ -349,18 +357,35 @@ def create_cataloge_csv():
         empty_row = ['' for x in range(11)]
         wr.writerow(empty_row)
         for category_l1 in tree.xpath(u"/Группы/Группа"):
-            row = empty_row
+            row = ['' for x in range(11)]
             row[0] = category_l1.find(u'Ид').text.encode('utf-8')
-            row[2] = category_l1.find(u'Наименование').text.encode('utf-8')
+            category_l1_name = category_l1.find(u'Наименование').text
+            # Исключаем из названия запрещенные символы, которые не пропускает престашоп
+            # также меняем слэш на символ '|', т.к. слэш распознается как вложенная категория
+            if re.search(r'[;&]', category_l1_name):
+                category_l1_name = re.sub(r'[;&]', ' ', category_l1_name)
+            category_l1_name = re.sub('/', '|', category_l1_name)
+            row[2] = category_l1_name.encode('utf-8')
             row[3] = 2
             row[4] = 0
             #row[10] = 'http://194.54.64.90/UserFiles/categories/' + category.name.encode('utf-8') + '.jpg'
             wr.writerow(row)
             for category_l2 in category_l1.xpath(u"Группы/Группа"):
-                empty_row = ['' for x in range(11)]
-                row = empty_row
+                row = ['' for x in range(11)]
                 row[0] = category_l2.find(u'Ид').text.encode('utf-8')
-                row[2] = category_l2.find(u'Наименование').text.encode('utf-8')
+                name = category_l2.find(u'Наименование').text
+                # Пустые категории делаем неактивными
+                Session = sessionmaker(bind=engine)
+                s = Session()
+                if s.query(Product).filter(Product.category == name.encode('utf-8')).filter(Product.available_quantity > 0).all():
+                    row[1] = 1
+                else:
+                    row[1] = 0
+                    logger.info('Category %s is empty' % name)
+                # Исключаем из названия запрещенные символы, которые не пропускает престашоп
+                if re.search(r'[;&]', name):
+                    name = re.sub(r'[;&]', ' ', name)
+                row[2] = re.sub('/', '|', name).encode('utf-8')
                 row[3] = category_l1.find(u'Ид').text.encode('utf-8')
                 row[4] = 0
                 wr.writerow(row)
@@ -383,12 +408,16 @@ def grab_all():
     print len(category_l1_elems)
     p = Pool(10)
     for category_l1 in category_l1_elems:
-        category_l1_name = category_l1.find(u'Наименование').text
-        logger.info('Category l1: %s' % category_l1_name)
+        try:
+            category_l1_name = category_l1.find(u'Наименование').text
+            logger.info('Category l1: %s' % category_l1_name)
+        except:
+            logger.warning('Can not find name for category' )
         print len(category_l1.xpath(u"Группы/Группа"))
 
         job_args = zip([x.text for x in category_l1.xpath(u"Группы/Группа/Ссылка")],
-                       [x.text for x in category_l1.xpath(u"Группы/Группа/Наименование")])
+                       [x.text for x in category_l1.xpath(u"Группы/Группа/Наименование")],
+                       [category_l1_name for x in range(len(category_l1.xpath(u"Группы/Группа/Наименование")))])
         p.map(grab_category_helper, job_args)
         logger.info('Sleep for 5 minut...')
         time.sleep(300)
@@ -405,5 +434,7 @@ def grab_all():
         #    grab_category(category_l2.find(u'Ссылка').text)
 
 grab_all()
-create_csv()
-create_cataloge_csv()
+#logger.info('Creating price...')
+#create_csv()
+#logger.info('Creating cataloge...')
+#create_cataloge_csv()
