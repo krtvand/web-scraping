@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-# TODO точки из названий
-SHORT_CATEGORY_LIST = '/home/andrew/short_category_list.xml'
+
+SHORT_CATEGORY_LIST = '/home/andrew/my_cataloge.xml'
 IMG_DIR = '/var/www/html/images'
 
 import logging
@@ -273,7 +273,10 @@ def grab_category(category_link, category_id):
             s.merge(product)
             if product.available_quantity == 0:
                 logger.info('Parsing %s category finished' % category_id)
-                return
+                s.commit()
+                s.close()
+                engine.dispose()
+                return True
         number_of_products += 20
         logger.info('%s parsed %s products' % (category_id, number_of_products))
         # Переходим на следующую страницу товаров в катологе
@@ -388,12 +391,13 @@ def create_cataloge_csv():
             wr.writerow(row)
             for category_l2 in category_l1.xpath(u"Группы/Группа"):
                 row = ['' for x in range(11)]
-                row[0] = category_l2.find(u'Ид').text.encode('utf-8')
+                category_id = category_l2.find(u'Ид').text.encode('utf-8')
+                row[0] = category_id
                 name = category_l2.find(u'Наименование').text
                 # Пустые категории делаем неактивными
                 Session = sessionmaker(bind=engine)
                 s = Session()
-                if s.query(Product).filter(Product.category == name.encode('utf-8')).filter(Product.available_quantity > 0).all():
+                if s.query(Product).filter(Product.category_id == category_id).filter(Product.available_quantity > 0).all():
                     row[1] = 1
                 else:
                     row[1] = 0
@@ -405,6 +409,25 @@ def create_cataloge_csv():
                 row[3] = category_l1.find(u'Ид').text.encode('utf-8')
                 row[4] = 0
                 wr.writerow(row)
+                for category_l3 in category_l2.xpath(u"Группы/Группа"):
+                    row = ['' for x in range(11)]
+                    category_id = category_l3.find(u'Ид').text.encode('utf-8')
+                    row[0] = category_id
+                    name = category_l3.find(u'Наименование').text
+                    # Пустые категории делаем неактивными
+                    if s.query(Product).filter(Product.category_id == category_id).filter(
+                                    Product.available_quantity > 0).all():
+                        row[1] = 1
+                    else:
+                        row[1] = 0
+                        logger.info('Category %s is empty' % name)
+                    # Исключаем из названия запрещенные символы, которые не пропускает престашоп
+                    if re.search(r'[;&]', name):
+                        name = re.sub(r'[;&]', ' ', name)
+                    row[2] = re.sub('/', '|', name).encode('utf-8')
+                    row[3] = category_l2.find(u'Ид').text.encode('utf-8')
+                    row[4] = 0
+                    wr.writerow(row)
 
 
 def grab_category_helper(args):
@@ -427,22 +450,24 @@ def grab_all():
         category_l1_name = category_l1.find(u'Наименование').text
         logger.info('(%s/%s) Category l1: %s ' % (category_l1_elems.index(category_l1),
                                                   len(category_l1_elems), category_l1_name))
+
         job_args = zip([x.text for x in category_l1.xpath(u"Группы/Группа/Ссылка")],
                        [x.text for x in category_l1.xpath(u"Группы/Группа/Ид")])
         p.map(grab_category_helper, job_args)
         logger.info('Sleep for 5 minut...')
-        #time.sleep(300)
-        """
-        for chunk in grouper(job_args, 10):
-            p = Pool(10)
-            p.map(grab_category_helper, chunk)
-            logger.info('Sleep for 1 minut...')
+        time.sleep(240)
+        for category_l2 in category_l1.xpath(u"Группы/Группа"):
+            logger.info('Category l2: %s' % category_l2.find(u'Наименование').text)
+            job_args = zip([x.text for x in category_l2.xpath(u"Группы/Группа/Ссылка")],
+                           [x.text for x in category_l2.xpath(u"Группы/Группа/Ид")])
+            p.map(grab_category_helper, job_args)
+            logger.info('Sleep for 5 minut...')
             time.sleep(60)
-        """
+
 
 if __name__ == '__main__':
-    grab_all()
+    #grab_all()
     #logger.info('Creating price...')
     #create_csv()
     #logger.info('Creating cataloge...')
-    #create_cataloge_csv()
+    create_cataloge_csv()
