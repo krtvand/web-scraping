@@ -351,7 +351,7 @@ def create_csv():
         # которые были добавлены ранее
         tree = etree.parse(SHORT_CATEGORY_LIST)
         for category_id in tree.xpath(u"//Ид"):
-            for product in s.query(Product).filter(Product.category_id == category_id.text.encode('utf-8')).all()[0]:
+            for product in s.query(Product).filter(Product.category_id == category_id.text.encode('utf-8')).all():
                 row = ['' for x in range(46)]
                 row[0] = product.articul
                 # Делаем товар активным только в случае наличия его на складе
@@ -461,7 +461,7 @@ def grab_all():
     root = tree.getroot()
     category_l1_elems = tree.xpath(u"/Группы/Группа")
 
-    p = Pool(20)
+    p = Pool(10)
     for category_l1 in category_l1_elems:
         category_l1_name = category_l1.find(u'Наименование').text
         logger.info('(%s/%s) Category l1: %s ' % (category_l1_elems.index(category_l1),
@@ -471,7 +471,7 @@ def grab_all():
         p.map(grab_category_helper, job_args)
         logger.info('Sleep for 4 minutes...')
         time.sleep(240)
-        if category_l1.find(u'Группы'):
+        if len(category_l1.find(u'Группы')) > 0:
             for category_l2 in category_l1.xpath(u"Группы/Группа"):
                 logger.info('Category l2: %s' % category_l2.find(u'Наименование').text)
                 job_args = zip([x.text for x in category_l2.xpath(u"Группы/Группа/Ссылка")],
@@ -479,12 +479,12 @@ def grab_all():
                 print len(job_args)
                 p.map(grab_category_helper, job_args)
                 logger.info('Sleep for 1 minute...')
-                time.sleep(60)
+                time.sleep(120)
 
 
 if __name__ == '__main__':
-    #grab_all()
+    grab_all()
     logger.info('Creating price...')
     create_csv()
-    #logger.info('Creating cataloge...')
-    #create_cataloge_csv()
+    logger.info('Creating cataloge...')
+    create_cataloge_csv()
