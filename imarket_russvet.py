@@ -1,8 +1,12 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+# TODO При заполнении марки кабеля проверять не наличие ID товара в XML, а именно марки
+
 SHORT_CATEGORY_LIST = '/home/andrew/my_cataloge.xml'
 IMG_DIR = '/var/www/html/images'
+CABLE_CHARACTS = '/home/andrew/cable_characteristics.xml'
+PRODUCT_CHARACTS = '/home/andrew/product_characteristics.xml'
 
 import logging
 import sys
@@ -350,9 +354,10 @@ def create_csv():
         # то в прайс включаются товары с устаревшими категориями,
         # которые были добавлены ранее
         tree = etree.parse(SHORT_CATEGORY_LIST)
+        characts_tree = etree.parse(PRODUCT_CHARACTS)
         for category_id in tree.xpath(u"//Ид"):
             for product in s.query(Product).filter(Product.category_id == category_id.text.encode('utf-8')).all():
-                row = ['' for x in range(46)]
+                row = ['' for x in range(45)]
                 row[0] = product.articul
                 # Делаем товар активным только в случае наличия его на складе
                 if product.wholesale_price > 0 and product.available_quantity > 0:
@@ -376,12 +381,29 @@ def create_csv():
                 row[6] = product.wholesale_price
                 row[12] = product.articul
                 row[13] = product.articul
+                row[15] = product.manufacturer
                 row[23] = product.available_quantity
                 row[38] = 1
                 # Image URLs (x,y,z...)
                 row[42] = product.my_img
                 # Delete existing images (0 = No, 1 = Yes)
                 row[43] = 1
+                # Проверяем, есть ли характеристики товара в нашем катологе товаров
+                expr = "/products/product[articul[text() = $articul]]"
+                xml_elem = characts_tree.xpath(expr, articul=product.articul)
+                if len(xml_elem) > 0:
+                    try:
+                        # Из XML файла берем характеристики и
+                        # приводим к следующему формату:
+                        # Характеристика1:значение1, характеристика2:значение2 и т.д.
+                        # при этом значение не может содержать такие символы как ^<>;=#{}
+                        features = ', '.join([':'.join([x.get('name'), re.sub('[\^<>;=#{}]', ' ', x.text)])
+                                              for x in xml_elem[0].xpath('features/*')
+                                              if x.text is not None])
+                        row[44] = features.encode('utf-8')
+                    except Exception as e:
+                        logger.warn('Error when reading features for %s: %s %s' % (product.articul, e.message, e.args))
+                    #row[44] = xml_elem[0].xpath('characteristics/model')[0].tag
                 wr.writerow(row)
 
 def create_cataloge_csv():
@@ -393,7 +415,10 @@ def create_cataloge_csv():
         for category_l1 in tree.xpath(u"/Группы/Группа"):
             row = ['' for x in range(11)]
             row[0] = category_l1.find(u'Ид').text.encode('utf-8')
-            category_l1_name = category_l1.find(u'Наименование').text
+            if category_l1.find(u'Алиас') is not None:
+                category_l1_name = category_l1.find(u'Алиас').text
+            else:
+                category_l1_name = category_l1.find(u'Наименование').text
             # Исключаем из названия запрещенные символы, которые не пропускает престашоп
             # также меняем слэш на символ '|', т.к. слэш распознается как вложенная категория
             if re.search(r'[;&]', category_l1_name):
@@ -408,11 +433,18 @@ def create_cataloge_csv():
                 row = ['' for x in range(11)]
                 category_id = category_l2.find(u'Ид').text.encode('utf-8')
                 row[0] = category_id
-                name = category_l2.find(u'Наименование').text
+                if category_l2.find(u'Алиас') is not None:
+                    name = category_l2.find(u'Алиас').text
+                else:
+                    name = category_l2.find(u'Наименование').text
                 # Пустые категории делаем неактивными
                 Session = sessionmaker(bind=engine)
                 s = Session()
+                # В базе должены быть товары из этой категории
                 if s.query(Product).filter(Product.category_id == category_id).filter(Product.available_quantity > 0).all():
+                    row[1] = 1
+                # Либо это категория должна быть родительской
+                elif len(category_l2.xpath(u"Группы/Группа")) > 0:
                     row[1] = 1
                 else:
                     row[1] = 0
@@ -428,7 +460,10 @@ def create_cataloge_csv():
                     row = ['' for x in range(11)]
                     category_id = category_l3.find(u'Ид').text.encode('utf-8')
                     row[0] = category_id
-                    name = category_l3.find(u'Наименование').text
+                    if category_l3.find(u'Алиас') is not None:
+                        name = category_l3.find(u'Алиас').text
+                    else:
+                        name = category_l3.find(u'Наименование').text
                     # Пустые категории делаем неактивными
                     if s.query(Product).filter(Product.category_id == category_id).filter(
                                     Product.available_quantity > 0).all():
@@ -454,6 +489,72 @@ def grouper(iterable, n, fillvalue=None):
     args = [iter(iterable)] * n
     return izip_longest(fillvalue=fillvalue, *args)
 
+def select_cable_characts(product):
+    """Функция добавляет еще одну характеристику "Марка"
+    к имеющимся в XML файл с характеристиками товаров
+    для категорий "Кабели и провода".
+    :param product:
+    :return:
+    """
+    cable_characts_tree = etree.parse(CABLE_CHARACTS)
+    # Считываем список возможных марок(моделей) кабеля
+    characts_set = {ch.text for ch in cable_characts_tree.iter('model')}
+    products_tree = etree.parse(PRODUCT_CHARACTS)
+    # Проверяем, есть ли товар в шашем катологе товаров
+    expr = "/products/product[articul[text() = $articul]]"
+    xml_elem = products_tree.xpath(expr, articul=product.articul)
+    # Если есть, выходим из функции, т.к. каждый товар
+    # должен полностью описываться при первой записи в файл
+    if len(xml_elem) > 0:
+        if xml_elem[0].xpath(u'features/feature[@name = "Марка"]'):
+            return True
+        else:
+            # Определяем марку кабеля как пересечение возможных
+            # типов кабеля с каждым словом из названия продукта
+            split_name = set(re.split('[\s/]', product.name.decode('utf-8')))
+            try:
+                etree.SubElement(xml_elem[0].xpath('features')[0], 'feature', {'name' : u'Марка'}).text = (characts_set & split_name).pop()
+                with open(PRODUCT_CHARACTS, 'w') as f:
+                    f.write(etree.tostring(products_tree, pretty_print=True, encoding='utf-8'))
+            except:
+                # В случае, если в наименовании товара отсутствует марка кабеля из списка,
+                # мы получаем ошибку 'pop from an empty set'. Данную ошибку пропускаем.
+                pass
+        #xml_elem[0].xpath('characteristics/model').text = 'test'
+    else:
+        logger.warning('Product %s exists in database but not in XML file with characteristics' % product.articul)
+        return False
+    """
+    else:
+        new_product = etree.SubElement(products_tree.getroot(), "product")
+        etree.SubElement(new_product, "articul").text = product.articul
+        etree.SubElement(new_product, "name").text = product.name.decode('utf-8')
+        new_product_characts = etree.SubElement(new_product, "characteristics")
+        # Определяем марку кабеля как пересечение возможных
+        # типов кабеля с каждым словом из названия продукта
+        split_name = set(re.split('[\s/]', product.name.decode('utf-8')))
+        try:
+            etree.SubElement(new_product_characts, u'Марка').text = (characts_set & split_name).pop()
+        except:
+            pass
+            #else:
+        #    logger.warning('Can not find model for cable %s' % product.name)
+
+    with open(PRODUCT_CHARACTS, 'w') as f:
+        f.write(etree.tostring(products_tree, pretty_print=True, encoding='utf-8'))
+    """
+
+def grab_cable_characts():
+    """ Получаем марку кабеля для все товаров из категории "Кабели и провода"
+    """
+    Session = sessionmaker(bind=engine)
+    s = Session()
+    tree = etree.parse(SHORT_CATEGORY_LIST)
+    # Получаем все id подкатегорий Кабели и провода (нулевой в списке категорий)
+    for category_id in tree.xpath(u"/Группы/Группа")[0].xpath(u"Группы/Группа/Ид"):
+        for product in s.query(Product).filter(Product.category_id == category_id.text).all():
+            select_cable_characts(product)
+
 def grab_all():
     logger.debug('Init...')
     login()
@@ -471,7 +572,8 @@ def grab_all():
         p.map(grab_category_helper, job_args)
         logger.info('Sleep for 4 minutes...')
         time.sleep(240)
-        if len(category_l1.find(u'Группы')) > 0:
+        # Если категория второго уровня имеет подкатегории, продолжаем парсинг
+        if category_l1.findall(u'Группы/Группа/Группы/Ид'):
             for category_l2 in category_l1.xpath(u"Группы/Группа"):
                 logger.info('Category l2: %s' % category_l2.find(u'Наименование').text)
                 job_args = zip([x.text for x in category_l2.xpath(u"Группы/Группа/Ссылка")],
@@ -483,8 +585,9 @@ def grab_all():
 
 
 if __name__ == '__main__':
-    grab_all()
+    #grab_all()
     logger.info('Creating price...')
+    #grab_cable_characts()
     create_csv()
-    logger.info('Creating cataloge...')
-    create_cataloge_csv()
+    #logger.info('Creating cataloge...')
+    #create_cataloge_csv()
