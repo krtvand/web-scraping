@@ -7,6 +7,7 @@ SHORT_CATEGORY_LIST = '/home/andrew/my_cataloge.xml'
 IMG_DIR = '/var/www/html/images'
 CABLE_CHARACTS = '/home/andrew/cable_characteristics.xml'
 PRODUCT_CHARACTS = '/home/andrew/product_characteristics.xml'
+HOME_FEATURED_PRODUCTS = '/home/andrew/home_featured_products.xml'
 
 import logging
 import sys
@@ -321,7 +322,7 @@ def grab_category(category_link, category_id):
         engine.dispose()
     return True
 
-def create_csv():
+def create_price():
     with open('/home/andrew/my_price.csv', 'wb') as f:
         wr = csv.writer(f, delimiter=';')
         wr.writerow(['ID',
@@ -355,6 +356,7 @@ def create_csv():
         # которые были добавлены ранее
         tree = etree.parse(SHORT_CATEGORY_LIST)
         characts_tree = etree.parse(PRODUCT_CHARACTS)
+        home_featured_products_tree = etree.parse(HOME_FEATURED_PRODUCTS)
         for category_id in tree.xpath(u"//Ид"):
             for product in s.query(Product).filter(Product.category_id == category_id.text.encode('utf-8')).all():
                 row = ['' for x in range(45)]
@@ -377,7 +379,17 @@ def create_csv():
                 # В качестве категории указываем ее текущую директорию и все родительские
                 parents = [x.text for x in category_id.xpath(u"ancestor::*/Ид")]
                 row[3] = ', '.join(parents)
-                row[4] = product.wholesale_price * 1.2
+                # Проверяем, нет ли товара в списке акций (товары на главной)
+                expr = "/products/product[articul[text() = $articul]]"
+                xml_elem = home_featured_products_tree.xpath(expr, articul=product.articul)
+                if len(xml_elem) > 0:
+                    # Указываем специальную цену
+                    row[4] = product.wholesale_price * float(xml_elem[0].xpath('markup')[0].text)
+                    # Добавляем категорию "home" (id = 2)
+                    row[3] = ', '.join([row[3], '2'])
+                # Иначе присваиваем стандартную наценку 20%
+                else:
+                    row[4] = product.wholesale_price * 1.2
                 row[6] = product.wholesale_price
                 row[12] = product.articul
                 row[13] = product.articul
@@ -396,8 +408,10 @@ def create_csv():
                         # Из XML файла берем характеристики и
                         # приводим к следующему формату:
                         # Характеристика1:значение1, характеристика2:значение2 и т.д.
-                        # при этом значение не может содержать такие символы как ^<>;=#{}
-                        features = ', '.join([':'.join([x.get('name'), re.sub('[\^<>;=#{}]', ' ', x.text)])
+                        # при этом имя характеристики и ее значение
+                        # не может содержать такие символы как ^<>;=#{}
+                        features = ', '.join([':'.join([re.sub(r'[\^<>;=#{}]+', ' ', x.get('name')),
+                                                        re.sub(r'[\^<>;=#{}]+', ' ', x.text)])
                                               for x in xml_elem[0].xpath('features/*')
                                               if x.text is not None])
                         row[44] = features.encode('utf-8')
@@ -582,12 +596,72 @@ def grab_all():
                 p.map(grab_category_helper, job_args)
                 logger.info('Sleep for 1 minute...')
                 time.sleep(120)
+def grab_product_characts():
+    g = login()
+    Session = sessionmaker(bind=engine)
+    s = Session()
+    """
+    TODO в текущей версии проверка наличия характеристик проходит путем
+    проверки наличия товара с данным артикулом в XML файле,
+    но существуют товары, которые не имеют характеристик
+    (т.к. на сайте доноре их не было во время первого парсинга), но уже записаны в XML файл.
+    Таким образом, в системе появляются товары,
+    которые уже никогда не получат описание
+    """
+    #  Проходим по категориям, которые есть в сокращенном списке категорий,
+    # если проходить по всем товарам в базе данных,
+    # то в прайс включаются товары с устаревшими категориями,
+    # которые были добавлены ранее
+    category_tree = etree.parse(SHORT_CATEGORY_LIST)
+    # XML файл с характеристиками товаров
+    products_tree = etree.parse(PRODUCT_CHARACTS)
+    for category_id in category_tree.xpath(u"//Ид"):
+        logger.info('Parsing features for %s' % category_id.text)
+        for product in s.query(Product).filter(Product.category_id == category_id.text.encode('utf-8')).all():
+            # for product in s.query(Product).filter(Product.category_id == '30163').all():
+            # Проверяем, есть ли товар в шашем катологе характеристик товаров
+            expr = "/products/product[articul[text() = $articul]]"
+            xml_elem = products_tree.xpath(expr, articul=product.articul)
+            # Если есть, выходим из функции, т.к. каждый товар
+            # должен полностью описываться при первой записи в файл
+            if len(xml_elem) > 0:
+                continue
+                # xml_elem[0].xpath('characteristics/model').text = 'test'
+            else:
+                logger.debug('Parsing features for %s', product.articul)
+                try:
+                    g.go(product.global_link)
+                except Exception as e:
+                    logger.warn('Can not open product page when parsing features for %s: %s %s' % (
+                    product.articul, e.message, e.args))
+                    with open(PRODUCT_CHARACTS, 'w') as f:
+                        f.write(etree.tostring(products_tree, pretty_print=True, encoding='utf-8'))
+                    logger.info('Sleep for 4 minutes...')
+                    time.sleep(240)
+                    continue
+                new_product = etree.SubElement(products_tree.getroot(), "product")
+                etree.SubElement(new_product, "articul").text = product.articul
+                etree.SubElement(new_product, "name").text = product.name.decode('utf-8')
+                new_product_characts = etree.SubElement(new_product, "features")
+                # Заполняем характеристики
+                for ch_selector in g.doc.select('//table[@class="OraBGAccentDark"]//tr[@class="tableDataCell"]'):
+                    try:
+                        etree.SubElement(new_product_characts, 'feature',
+                                         {'name': ch_selector.select('td[@class="tableDataCell"]')[0].text()}).text = \
+                        ch_selector.select('td[@class="tableDataCell"]')[1].text()
+                    except Exception as e:
+                        logger.warn('Error when parsing features for %s: %s %s' % (product.articul, e.message, e.args))
+        with open(PRODUCT_CHARACTS, 'w') as f:
+            f.write(etree.tostring(products_tree, pretty_print=True, encoding='utf-8'))
 
 
 if __name__ == '__main__':
-    #grab_all()
+    grab_all()
+    grab_product_characts()
+    grab_cable_characts()
     logger.info('Creating price...')
-    #grab_cable_characts()
-    create_csv()
-    #logger.info('Creating cataloge...')
-    #create_cataloge_csv()
+    create_price()
+    logger.info('Creating cataloge...')
+    create_cataloge_csv()
+    g = Grab(timeout=1200)
+    g.go('http://xn---13-5cdfy6al7m.xn--p1ai/adminkrtvand/searchcron.php?full=1&token=aiCYwDnj&id_shop=1')
