@@ -654,6 +654,57 @@ def grab_product_characts():
         with open(PRODUCT_CHARACTS, 'w') as f:
             f.write(etree.tostring(products_tree, pretty_print=True, encoding='utf-8'))
 
+def delete_product(articul):
+    """ Удаляем товар, а именно файл с изображением,
+    описание его характеристик из xml файла, и запись из базы данных
+
+    :param articul: артикул товара
+    """
+    # Удаляем характеристики товара
+    products_tree = etree.parse(PRODUCT_CHARACTS)
+    # Проверяем, есть ли товар в шашем катологе характеристик товаров
+    expr = "/products/product[articul[text() = $articul]]"
+    xml_elem = products_tree.xpath(expr, articul=articul)
+    if len(xml_elem) > 0:
+        xml_elem[0].getparent().remove(xml_elem[0])
+        logger.info('Product %s is deleted from characteristics file' % articul)
+    with open('PRODUCT_CHARACTS', 'w') as f:
+        f.write(etree.tostring(products_tree, pretty_print=True, encoding='utf-8'))
+    # Удаляем файл с изображением товара
+    Session = sessionmaker(bind=engine)
+    s = Session()
+    product = s.query(Product).filter(Product.articul == articul.encode('utf-8')).first()
+    if product is not None:
+        try:
+            os.remove(re.sub('http://localhost', '/var/www/html', product.my_img))
+            logger.info('Deleted image of Product %s' % articul)
+        except Exception as e:
+            logger.warn('Error when deleting image %s: %s %s' % (articul, e.message, e.args))
+        # Удаляем товар из базы
+        try:
+            s.delete(product)
+            s.commit()
+            s.close()
+            logger.info('Product %s is deleted from database' % articul)
+        except Exception as e:
+            logger.warn('Error when deleting product %s from database: %s %s' % (articul, e.message, e.args))
+    else:
+        logger.info('Product %s is not present in database' % articul)
+
+def validate_product_charcts_xml():
+    # TODO функция удаляет все товары не из базы руссвет.
+    products_tree = etree.parse(PRODUCT_CHARACTS)
+    Session = sessionmaker(bind=engine)
+    s = Session()
+    for articul in products_tree.xpath("//articul"):
+        product = s.query(Product).filter(Product.articul == articul.text.encode('utf-8')).first()
+        if product is None:
+            xml_product = articul.getparent()
+            xml_product.getparent().remove(xml_product)
+            logger.info('Product %s is deleted from characteristics file' % articul.text)
+    with open(PRODUCT_CHARACTS, 'w') as f:
+        f.write(etree.tostring(products_tree, pretty_print=True, encoding='utf-8'))
+
 
 if __name__ == '__main__':
     grab_all()
