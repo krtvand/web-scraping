@@ -6,7 +6,7 @@ CATEGORIES_FROM_SVETSERVIS = {u'01 Кабельно-проводниковая �
                               u'0101 Кабель провод категории ТУ',
                               u'0102 Кабель провод категории ГОСТ'}
 SVETSERVIS_PRICE = '/home/andrew/svetservis_price.xls'
-SHORT_CATEGORY_LIST = '/home/andrew/my_cataloge.xml'
+MY_CATEGORY_LIST = '/home/andrew/my_cataloge.xml'
 HOME_FEATURED_PRODUCTS = '/home/andrew/home_featured_products.xml'
 PRODUCT_CHARACTS = '/home/andrew/product_characteristics.xml'
 CABLE_CHARACTS = '/home/andrew/cable_characteristics.xml'
@@ -110,7 +110,7 @@ class Svetservis(object):
         except:
             self.logger.warn('Can not access http://store.svetservis.ru/map/')
 
-        tree = etree.parse(SHORT_CATEGORY_LIST)
+        tree = etree.parse(MY_CATEGORY_LIST)
         # Используем в качестве id категорий инкрементный индекс начиная с 10ти
         category_id = 10
         ul_level_1_selectors = self.g.doc.select('//div[@class="pod_cart"]/ul')
@@ -156,7 +156,7 @@ class Svetservis(object):
                     etree.SubElement(xml_category_level_3, u"Ссылка").text = category_level_3.link
                 li_index += 1
 
-        with open(SHORT_CATEGORY_LIST, 'w') as f:
+        with open(MY_CATEGORY_LIST, 'w') as f:
             f.write(etree.tostring(tree, pretty_print=True, encoding='utf-8'))
 
     def download_image(self, img_ref):
@@ -283,7 +283,7 @@ class Svetservis(object):
                         for el in it.children:
                             self.scrap_category(el)
         """
-        tree = etree.parse(SHORT_CATEGORY_LIST)
+        tree = etree.parse(MY_CATEGORY_LIST)
         root = tree.getroot()
         category_l1_elems = tree.xpath(u"/Группы/Группа")
 
@@ -329,7 +329,7 @@ class Svetservis(object):
             # если проходить по всем товарам в базе данных,
             # то в прайс включаются товары с устаревшими категориями,
             # которые были добавлены ранее
-            tree = etree.parse(SHORT_CATEGORY_LIST)
+            tree = etree.parse(MY_CATEGORY_LIST)
             characts_tree = etree.parse(PRODUCT_CHARACTS)
             home_featured_products_tree = etree.parse(HOME_FEATURED_PRODUCTS)
             for category_id in tree.xpath(u"//Ид"):
@@ -482,7 +482,7 @@ class Svetservis(object):
     def grab_cable_characts(self):
         """ Получаем марку кабеля для все товаров из категории "Кабели и провода"
         """
-        tree = etree.parse(SHORT_CATEGORY_LIST)
+        tree = etree.parse(MY_CATEGORY_LIST)
         s = self.session()
         # Получаем все id подкатегорий Кабели и провода (нулевой в списке категорий)
         for category_id in tree.xpath(u"/Группы/Группа")[0].xpath(u"Группы/Группа/Группы/Группа/Ид"):
@@ -491,7 +491,6 @@ class Svetservis(object):
                 print product.name_from_price
 ss = Svetservis()
 #s.scrap_all()
-#ss.read_price()
-#ss.create_cataloge_csv()
+ss.read_price()
 #ss.grab_cable_characts()
 ss.create_csv()

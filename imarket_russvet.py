@@ -3,7 +3,7 @@
 
 # TODO При заполнении марки кабеля проверять не наличие ID товара в XML, а именно марки
 
-SHORT_CATEGORY_LIST = '/home/andrew/my_cataloge.xml'
+MY_CATEGORY_LIST = '/home/andrew/my_cataloge.xml'
 IMG_DIR = '/var/www/html/images'
 CABLE_CHARACTS = '/home/andrew/cable_characteristics.xml'
 PRODUCT_CHARACTS = '/home/andrew/product_characteristics.xml'
@@ -114,7 +114,7 @@ def get_categories(g):
     """ Получаем все категории с сайта
     :param g: Grab
     """
-    tree = etree.parse(SHORT_CATEGORY_LIST)
+    tree = etree.parse(MY_CATEGORY_LIST)
     # Парсим категории первого уровня
     category_level_1_selectors = g.doc.select('//td[@class="customCategory"]//a[@class="levelOne"]')
     categories = Category('top')
@@ -158,7 +158,7 @@ def get_categories(g):
                 else:
                     xml_link_elem = etree.SubElement(xml_elem[0], u"Ссылка")
                     xml_link_elem.text = category_level_2.link
-    with open(SHORT_CATEGORY_LIST, 'w') as f:
+    with open(MY_CATEGORY_LIST, 'w') as f:
         f.write(etree.tostring(tree, pretty_print=True, encoding='utf-8'))
     return categories
 
@@ -354,7 +354,7 @@ def create_price():
         # если проходить по всем товарам в базе данных,
         # то в прайс включаются товары с устаревшими категориями,
         # которые были добавлены ранее
-        tree = etree.parse(SHORT_CATEGORY_LIST)
+        tree = etree.parse(MY_CATEGORY_LIST)
         characts_tree = etree.parse(PRODUCT_CHARACTS)
         home_featured_products_tree = etree.parse(HOME_FEATURED_PRODUCTS)
         for category_id in tree.xpath(u"//Ид"):
@@ -376,8 +376,16 @@ def create_price():
                 product.name = re.sub('=', '-', product.name)
                 product.name = re.sub(';', ',', product.name)
                 row[2] = product.name
-                # В качестве категории указываем ее текущую директорию и все родительские
-                parents = [x.text for x in category_id.xpath(u"ancestor::*/Ид")]
+                # Получаем список категорий, к которым должен относиться товар.
+                # Если родительская категория относится к категории "Включает",
+                # то Ид этой категории мы пропускаем, и указываем только категории выше "Включает"
+                include_dir = category_id.xpath(u'ancestor::Включает')
+                if len(include_dir) == 0:
+                    # В качестве категории указываем ее текущую директорию и все родительские
+                    parents = [x.text for x in category_id.xpath(u"ancestor::*/Ид")]
+                else:
+                    # Иначе не указываем родителя
+                    parents = [x.text for x in include_dir[0].xpath(u"ancestor::*/Ид")]
                 row[3] = ', '.join(parents)
                 # Проверяем, нет ли товара в списке акций (товары на главной)
                 expr = "/products/product[articul[text() = $articul]]"
@@ -421,77 +429,58 @@ def create_price():
                 wr.writerow(row)
 
 def create_cataloge_csv():
-    tree = etree.parse(SHORT_CATEGORY_LIST)
+    def read_category(xml_category):
+        row = ['' for x in range(11)]
+        category_id = xml_category.find(u'Ид').text.encode('utf-8')
+        # Category ID
+        row[0] = category_id
+        # Для поставщика Светсервис все категории должны быть активными
+        if xml_category.get(u'поставщик') == u'Светсервис':
+            row[1] = 1
+        # Пустые категории делаем неактивными
+        # В базе должены быть товары из этой категории
+        elif s.query(Product).filter(Product.category_id == category_id).filter(
+                        Product.available_quantity > 0).all():
+            row[1] = 1
+        # Либо это категория должна быть родительской
+        elif len(xml_category.xpath(u"Группы/Группа")) > 0:
+            row[1] = 1
+        else:
+            row[1] = 0
+            logger.info('Category %s is empty' % category_id)
+        # Наисенование категории
+        if xml_category.find(u'Алиас') is not None:
+            name = xml_category.find(u'Алиас').text
+        else:
+            name = xml_category.find(u'Наименование').text
+        # Исключаем из названия запрещенные символы, которые не пропускает престашоп
+        if re.search(r'[;&]', name):
+            name = re.sub(r'[;&]', ' ', name)
+        row[2] = re.sub('/', '|', name).encode('utf-8')
+        # Родительская категория
+        parent_id = xml_category.xpath(u'../../Ид')
+        if len(parent_id) > 0:
+            row[3] = parent_id[0].text.encode('utf-8')
+        else:
+            # Категория Home = 2
+            row[3] = '2'
+        # Корневая категория (0/1) (Используется с функцией мультимагазин)
+        row[4] = 0
+        wr.writerow(row)
+        # Проходим по дочерним категориям
+        for subcategory in xml_category.xpath(u"Группы/Группа"):
+            read_category(subcategory)
+
+    tree = etree.parse(MY_CATEGORY_LIST)
     with open('/home/andrew/my_cataloge.csv', 'wb') as f:
+        # Записываем заголовок
         wr = csv.writer(f, delimiter=';')
         empty_row = ['' for x in range(11)]
         wr.writerow(empty_row)
+        Session = sessionmaker(bind=engine)
+        s = Session()
         for category_l1 in tree.xpath(u"/Группы/Группа"):
-            row = ['' for x in range(11)]
-            row[0] = category_l1.find(u'Ид').text.encode('utf-8')
-            if category_l1.find(u'Алиас') is not None:
-                category_l1_name = category_l1.find(u'Алиас').text
-            else:
-                category_l1_name = category_l1.find(u'Наименование').text
-            # Исключаем из названия запрещенные символы, которые не пропускает престашоп
-            # также меняем слэш на символ '|', т.к. слэш распознается как вложенная категория
-            if re.search(r'[;&]', category_l1_name):
-                category_l1_name = re.sub(r'[;&]', ' ', category_l1_name)
-            category_l1_name = re.sub('/', '|', category_l1_name)
-            row[2] = category_l1_name.encode('utf-8')
-            row[3] = 2
-            row[4] = 0
-            #row[10] = 'http://194.54.64.90/UserFiles/categories/' + category.name.encode('utf-8') + '.jpg'
-            wr.writerow(row)
-            for category_l2 in category_l1.xpath(u"Группы/Группа"):
-                row = ['' for x in range(11)]
-                category_id = category_l2.find(u'Ид').text.encode('utf-8')
-                row[0] = category_id
-                if category_l2.find(u'Алиас') is not None:
-                    name = category_l2.find(u'Алиас').text
-                else:
-                    name = category_l2.find(u'Наименование').text
-                # Пустые категории делаем неактивными
-                Session = sessionmaker(bind=engine)
-                s = Session()
-                # В базе должены быть товары из этой категории
-                if s.query(Product).filter(Product.category_id == category_id).filter(Product.available_quantity > 0).all():
-                    row[1] = 1
-                # Либо это категория должна быть родительской
-                elif len(category_l2.xpath(u"Группы/Группа")) > 0:
-                    row[1] = 1
-                else:
-                    row[1] = 0
-                    logger.info('Category %s is empty' % name)
-                # Исключаем из названия запрещенные символы, которые не пропускает престашоп
-                if re.search(r'[;&]', name):
-                    name = re.sub(r'[;&]', ' ', name)
-                row[2] = re.sub('/', '|', name).encode('utf-8')
-                row[3] = category_l1.find(u'Ид').text.encode('utf-8')
-                row[4] = 0
-                wr.writerow(row)
-                for category_l3 in category_l2.xpath(u"Группы/Группа"):
-                    row = ['' for x in range(11)]
-                    category_id = category_l3.find(u'Ид').text.encode('utf-8')
-                    row[0] = category_id
-                    if category_l3.find(u'Алиас') is not None:
-                        name = category_l3.find(u'Алиас').text
-                    else:
-                        name = category_l3.find(u'Наименование').text
-                    # Пустые категории делаем неактивными
-                    if s.query(Product).filter(Product.category_id == category_id).filter(
-                                    Product.available_quantity > 0).all():
-                        row[1] = 1
-                    else:
-                        row[1] = 0
-                        logger.info('Category %s is empty' % name)
-                    # Исключаем из названия запрещенные символы, которые не пропускает престашоп
-                    if re.search(r'[;&]', name):
-                        name = re.sub(r'[;&]', ' ', name)
-                    row[2] = re.sub('/', '|', name).encode('utf-8')
-                    row[3] = category_l2.find(u'Ид').text.encode('utf-8')
-                    row[4] = 0
-                    wr.writerow(row)
+            read_category(category_l1)
 
 
 def grab_category_helper(args):
@@ -563,7 +552,7 @@ def grab_cable_characts():
     """
     Session = sessionmaker(bind=engine)
     s = Session()
-    tree = etree.parse(SHORT_CATEGORY_LIST)
+    tree = etree.parse(MY_CATEGORY_LIST)
     # Получаем все id подкатегорий Кабели и провода (нулевой в списке категорий)
     for category_id in tree.xpath(u"/Группы/Группа")[0].xpath(u"Группы/Группа/Ид"):
         for product in s.query(Product).filter(Product.category_id == category_id.text).all():
@@ -572,7 +561,7 @@ def grab_cable_characts():
 def grab_all():
     logger.debug('Init...')
     login()
-    tree = etree.parse(SHORT_CATEGORY_LIST)
+    tree = etree.parse(MY_CATEGORY_LIST)
     root = tree.getroot()
     category_l1_elems = tree.xpath(u"/Группы/Группа")
 
@@ -612,7 +601,7 @@ def grab_product_characts():
     # если проходить по всем товарам в базе данных,
     # то в прайс включаются товары с устаревшими категориями,
     # которые были добавлены ранее
-    category_tree = etree.parse(SHORT_CATEGORY_LIST)
+    category_tree = etree.parse(MY_CATEGORY_LIST)
     # XML файл с характеристиками товаров
     products_tree = etree.parse(PRODUCT_CHARACTS)
     for category_id in category_tree.xpath(u"//Ид"):
@@ -651,8 +640,8 @@ def grab_product_characts():
                         ch_selector.select('td[@class="tableDataCell"]')[1].text()
                     except Exception as e:
                         logger.warn('Error when parsing features for %s: %s %s' % (product.articul, e.message, e.args))
-        with open(PRODUCT_CHARACTS, 'w') as f:
-            f.write(etree.tostring(products_tree, pretty_print=True, encoding='utf-8'))
+    with open(PRODUCT_CHARACTS, 'w') as f:
+        f.write(etree.tostring(products_tree, pretty_print=True, encoding='utf-8'))
 
 def delete_product(articul):
     """ Удаляем товар, а именно файл с изображением,
@@ -709,10 +698,9 @@ def validate_product_charcts_xml():
 if __name__ == '__main__':
     grab_all()
     grab_product_characts()
-    grab_cable_characts()
-    logger.info('Creating price...')
-    create_price()
     logger.info('Creating cataloge...')
     create_cataloge_csv()
+    logger.info('Creating price...')
+    create_price()
     g = Grab(timeout=1200)
     g.go('http://xn---13-5cdfy6al7m.xn--p1ai/adminkrtvand/searchcron.php?full=1&token=aiCYwDnj&id_shop=1')
