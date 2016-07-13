@@ -694,8 +694,15 @@ def validate_product_charcts_xml():
     with open(PRODUCT_CHARACTS, 'w') as f:
         f.write(etree.tostring(products_tree, pretty_print=True, encoding='utf-8'))
 
+def validate_category_list_xml():
+    tree = etree.parse(MY_CATEGORY_LIST)
+    for group in tree.xpath(u"//Группа"):
+        xml_link_elem = group.find(u"Ссылка")
+        if xml_link_elem is None:
+            logger.warning('Category %s does not have link elem' % group.find(u'Ид').text)
 
 if __name__ == '__main__':
+    """
     grab_all()
     grab_product_characts()
     logger.info('Creating cataloge...')
@@ -704,3 +711,5 @@ if __name__ == '__main__':
     create_price()
     g = Grab(timeout=1200)
     g.go('http://xn---13-5cdfy6al7m.xn--p1ai/adminkrtvand/searchcron.php?full=1&token=aiCYwDnj&id_shop=1')
+    """
+    validate_category_list_xml()
