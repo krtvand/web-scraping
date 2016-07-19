@@ -336,20 +336,20 @@ class Svetservis(object):
                 for product in s.query(Goods).filter(Goods.category == category_id.text.encode('utf-8')).all():
             #for goods in session.query(Goods):
                     if product.wholesale_price and product.articul and \
-                            product.name_from_price:
+                            product.name_from_site:
                         row = ['' for x in range(46)]
                         row[0] = product.articul.encode('utf-8')
                         row[1] = '1'
                         # Prestashop допускает максимальную длину наименования
                         # не более 128 символов
-                        if len(product.name_from_price) > 128:
-                            product.name_from_price = product.name_from_price.decode('utf-8')
-                            product.name_from_price = product.name_from_price[0:127]
-                            product.name_from_price = product.name_from_price.encode('utf-8')
+                        if len(product.name_from_site) > 128:
+                            product.name_from_site = product.name_from_site.decode('utf-8')
+                            product.name_from_site = product.name_from_site[0:127]
+                            product.name_from_site = product.name_from_site.encode('utf-8')
                         # Исключаем/меняем недопустимые символы в названии товара
-                        product.name_from_price = re.sub('=', '-', product.name_from_price)
-                        product.name_from_price = re.sub(';', ',', product.name_from_price)
-                        row[2] = product.name_from_price
+                        product.name_from_site = re.sub('=', '-', product.name_from_site)
+                        product.name_from_site = re.sub(';', ',', product.name_from_site)
+                        row[2] = product.name_from_site
                         # В качестве категории указываем ее текущую директорию и все родительские
                         parents = [x.text for x in category_id.xpath(u"ancestor::*/Ид")]
                         row[3] = ', '.join(parents)
@@ -439,44 +439,69 @@ class Svetservis(object):
         xml_elem = products_tree.xpath(expr, articul=product.articul)
         # Если есть, выходим из функции, т.к. каждый товар
         # должен полностью описываться при первой записи в файл
-        if len(xml_elem) > 0:
-            if xml_elem[0].xpath(u'features/feature[@name = "Марка"]'):
-                return True
-            else:
-                # Определяем марку кабеля как пересечение возможных
-                # типов кабеля с каждым словом из названия продукта
-                split_name = set(re.split('[\s/]', product.name_from_price.decode('utf-8')))
-                try:
-                    etree.SubElement(xml_elem[0].xpath('features')[0], 'feature', {'name': u'Марка'}).text = (
-                    characts_set & split_name).pop()
-                    with open(PRODUCT_CHARACTS, 'w') as f:
-                        f.write(etree.tostring(products_tree, pretty_print=True, encoding='utf-8'))
-                except:
-                    # В случае, если в наименовании товара отсутствует марка кабеля из списка,
-                    # мы получаем ошибку 'pop from an empty set'. Данную ошибку пропускаем.
-                    pass
-                    # xml_elem[0].xpath('characteristics/model').text = 'test'
-        else:
-            new_product = etree.SubElement(products_tree.getroot(), "product")
-            etree.SubElement(new_product, "articul").text = product.articul
-            etree.SubElement(new_product, "name").text = product.name_from_price.decode('utf-8')
-            new_product_characts = etree.SubElement(new_product, "features")
+        def write_number_wires(xml_elem):
+            # Определяем количество жил и сечение
+            """
+                .*?\s - пропускаем название
+                (\d,?\d*)\*? - первая группа количество жил и символ звездочка(может отсутствовать),
+                если в имени не указано количество жил, то в группу записывается сечение
+                \s? - возможен пробел после звездочки
+                (\d*,?\d*)? - вторая группа сечение (например 1,5) обязательная группа, может отсутствовать
+                """
+            match_obj = re.search(r'.*?\s(\d,?\d*)\*?\s?(\d*,?\d*)?', product.name_from_price)
+            if match_obj is not None:
+                if len(match_obj.groups()) == 2:
+                    # Если в наименовании указано количество жил
+                    if match_obj.group(1) and len(match_obj.group(2)) > 0:
+                        etree.SubElement(xml_elem.xpath('features')[0], 'feature',
+                                         {'name': u'Количество жил'}).text = match_obj.group(1)
+                        # В сечении кабеля меняем запятую на точку для облегчения формирования csv файла
+                        etree.SubElement(xml_elem.xpath('features')[0], 'feature',
+                                         {'name': u'Сечение жилы'}).text = re.sub(',', '.', match_obj.group(2))
+
+                    elif match_obj.group(1) and len(match_obj.group(2)) == 0:
+                        etree.SubElement(xml_elem.xpath('features')[0], 'feature',
+                                         {'name': u'Количество жил'}).text = '1'
+                        etree.SubElement(xml_elem.xpath('features')[0], 'feature',
+                                         {'name': u'Сечение жилы'}).text = re.sub(',', '.', match_obj.group(1))
+        def write_model(xml_elem):
             # Определяем марку кабеля как пересечение возможных
             # типов кабеля с каждым словом из названия продукта
             split_name = set(re.split('[\s/]', product.name_from_price.decode('utf-8')))
             try:
-                etree.SubElement(new_product_characts,
-                                 'feature', {'name': u'Марка'}).text = (characts_set & split_name).pop()
-                with open(PRODUCT_CHARACTS, 'w') as f:
-                    f.write(etree.tostring(products_tree, pretty_print=True, encoding='utf-8'))
+                etree.SubElement(xml_elem.xpath('features')[0], 'feature', {'name': u'Марка'}).text = (
+                    characts_set & split_name).pop()
             except:
                 # В случае, если в наименовании товара отсутствует марка кабеля из списка,
                 # мы получаем ошибку 'pop from an empty set'. Данную ошибку пропускаем.
                 pass
+                # xml_elem[0].xpath('characteristics/model').text = 'test'
+        if len(xml_elem) > 0:
+            # Количество жил и сечение
+            if xml_elem[0].xpath(u'features/feature[@name = "Количество жил"]'):
+                pass
+            else:
+                write_number_wires(xml_elem[0])
+                with open(PRODUCT_CHARACTS, 'w') as f:
+                    f.write(etree.tostring(products_tree, pretty_print=True, encoding='utf-8'))
+            # Добавляем марку кабеля
+            if xml_elem[0].xpath(u'features/feature[@name = "Марка"]'):
+                return True
+            else:
+                write_model(xml_elem[0])
+                with open(PRODUCT_CHARACTS, 'w') as f:
+                    f.write(etree.tostring(products_tree, pretty_print=True, encoding='utf-8'))
+        else:
+            new_product = etree.SubElement(products_tree.getroot(), "product")
+            etree.SubElement(new_product, "articul").text = product.articul
+            etree.SubElement(new_product, "name").text = product.name_from_price.decode('utf-8')
+            etree.SubElement(new_product, "features")
+            write_number_wires(new_product)
+            write_model(new_product)
+            with open(PRODUCT_CHARACTS, 'w') as f:
+                f.write(etree.tostring(products_tree, pretty_print=True, encoding='utf-8'))
 
 
-        with open(PRODUCT_CHARACTS, 'w') as f:
-            f.write(etree.tostring(products_tree, pretty_print=True, encoding='utf-8'))
 
 
     def grab_cable_characts(self):
@@ -491,6 +516,6 @@ class Svetservis(object):
                 print product.name_from_price
 ss = Svetservis()
 #s.scrap_all()
-ss.read_price()
+#ss.read_price()
 #ss.grab_cable_characts()
 ss.create_csv()

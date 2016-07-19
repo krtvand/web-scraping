@@ -489,6 +489,7 @@ def grab_category_helper(args):
 def grouper(iterable, n, fillvalue=None):
     "Collect data into fixed-length chunks or blocks"
     # grouper('ABCDEFG', 3, 'x') --> ABC DEF Gxx
+
     args = [iter(iterable)] * n
     return izip_longest(fillvalue=fillvalue, *args)
 
@@ -562,9 +563,20 @@ def grab_all():
     logger.debug('Init...')
     login()
     tree = etree.parse(MY_CATEGORY_LIST)
-    root = tree.getroot()
-    category_l1_elems = tree.xpath(u"/Группы/Группа")
+    #root = tree.getroot()
+    #category_l1_elems = tree.xpath(u"/Группы/Группа")
 
+    categories = tree.xpath(u'//Группа[Ид and Ссылка]')
+    # Функция парсинга категории принимает пару значений Ссылка и Ид
+    job_args = zip([x.find(u'Ссылка').text for x in categories],
+                   [x.find(u'Ид').text for x in categories])
+    p = Pool(10)
+    # Парсим категории не все сразу, а по 100 штук, чтоб сайт донор нас не забанил
+    for chunk in grouper(job_args, 100, ['','']):
+        p.map(grab_category_helper, chunk)
+        logger.info('Sleep for 4 minutes...')
+        time.sleep(240)
+"""
     p = Pool(10)
     for category_l1 in category_l1_elems:
         category_l1_name = category_l1.find(u'Наименование').text
@@ -585,6 +597,8 @@ def grab_all():
                 p.map(grab_category_helper, job_args)
                 logger.info('Sleep for 1 minute...')
                 time.sleep(120)
+
+"""
 def grab_product_characts():
     g = login()
     Session = sessionmaker(bind=engine)
@@ -702,14 +716,12 @@ def validate_category_list_xml():
             logger.warning('Category %s does not have link elem' % group.find(u'Ид').text)
 
 if __name__ == '__main__':
-    """
     grab_all()
-    grab_product_characts()
+    logger.info('Parsing features...')
+    #grab_product_characts()
     logger.info('Creating cataloge...')
     create_cataloge_csv()
     logger.info('Creating price...')
     create_price()
-    g = Grab(timeout=1200)
-    g.go('http://xn---13-5cdfy6al7m.xn--p1ai/adminkrtvand/searchcron.php?full=1&token=aiCYwDnj&id_shop=1')
-    """
-    validate_category_list_xml()
+    #g = Grab(timeout=1200)
+    #g.go('http://xn---13-5cdfy6al7m.xn--p1ai/adminkrtvand/searchcron.php?full=1&token=aiCYwDnj&id_shop=1')
