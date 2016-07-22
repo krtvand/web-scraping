@@ -559,9 +559,26 @@ def grab_cable_characts():
         for product in s.query(Product).filter(Product.category_id == category_id.text).all():
             select_cable_characts(product)
 
+def reset_database():
+    """
+    Обнуляем количесвто и цену для всех товаров в базе данных,
+    для отключения этих товаров в интернет магазине
+    """
+    Session = sessionmaker(bind=engine)
+    s = Session()
+    for product in s.query(Product).all():
+        product.wholesale_price = 0
+        product.available_quantity = 0
+    s.commit()
+
 def grab_all():
     logger.debug('Init...')
     login()
+    """
+    Обнуляем количесвто и цену для всех товаров в базе данных,
+    для отключения этих товаров в интернет магазине
+    """
+    reset_database()
     tree = etree.parse(MY_CATEGORY_LIST)
     #root = tree.getroot()
     #category_l1_elems = tree.xpath(u"/Группы/Группа")
@@ -714,6 +731,52 @@ def validate_category_list_xml():
         xml_link_elem = group.find(u"Ссылка")
         if xml_link_elem is None:
             logger.warning('Category %s does not have link elem' % group.find(u'Ид').text)
+
+def create_price_excel():
+    """
+    Функция создает прайс лист в формате csv для покупателей, которые запрашивают прайс лист.
+    csv файл для удобства можно сохранять как excel файл.
+    """
+    with open('/home/andrew/Electrosnab-opt-price.csv', 'wb') as f:
+        wr = csv.writer(f, delimiter=';')
+        wr.writerow([u'Артикул'.encode('cp1251'), u'Наименование'.encode('cp1251'),
+                     u'Цена'.encode('cp1251'), u'Категория'.encode('cp1251'),
+                     u'Производитель'.encode('cp1251'), u'Количество на складе'.encode('cp1251'),
+                     u'Изображение'.encode('cp1251')])
+        Session = sessionmaker(bind=engine)
+        s = Session()
+        #  Проходим по категориям, которые есть в сокращенном списке категорий,
+        # если проходить по всем товарам в базе данных,
+        # то в прайс включаются товары с устаревшими категориями,
+        # которые были добавлены ранее
+        tree = etree.parse(MY_CATEGORY_LIST)
+        for category_id in tree.xpath(u"//Ид"):
+            for product in s.query(Product).filter(Product.category_id == category_id.text.encode('utf-8')).order_by(
+                    Product.name).all():
+                row = ['' for x in range(7)]
+                row[0] = product.articul
+                # Делаем товар активным только в случае наличия его на складе
+                if product.wholesale_price > 0 and product.available_quantity > 0:
+                    row[1] = product.name.decode('utf-8').encode('cp1251')
+                    # Получаем список категорий, к которым должен относиться товар.
+                    # Если родительская категория относится к категории "Включает",
+                    # то Ид этой категории мы пропускаем, и указываем только категории выше "Включает"
+                    include_dir = category_id.xpath(u'ancestor::Включает')
+                    if len(include_dir) == 0:
+                        # В качестве категории указываем ее текущую директорию и все родительские
+                        parents = [x.text for x in category_id.xpath(u"ancestor::*/Наименование")]
+                    else:
+                        # Иначе не указываем родителя
+                        parents = [x.text for x in include_dir[0].xpath(u"ancestor::*/Наименование")]
+                    row[3] = ', '.join(parents[::-1]).encode('cp1251')
+                    # Проверяем, нет ли товара в списке акций (товары на главной)
+                    expr = "/products/product[articul[text() = $articul]]"
+                    row[2] = "%0.2f" % (product.wholesale_price * 1.05)
+                    row[4] = product.manufacturer.decode('utf-8').encode('cp1251')
+                    row[5] = product.available_quantity
+                    # Image URLs (x,y,z...)
+                    row[6] = re.sub('localhost', u'кабель-13.рф', product.my_img).encode('cp1251')
+                    wr.writerow(row)
 
 if __name__ == '__main__':
     grab_all()
