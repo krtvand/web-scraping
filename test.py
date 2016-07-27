@@ -301,7 +301,19 @@ def create_price_excel():
 """
 
 g = Grab()
+s = set()
 g.go('https://ru.bongacams.com')
-for link in g.doc.select('//a[@class="profile mls_diplayname"]'):
-    print link.text()
+for link in g.doc.select('//a[@class="chat"]'):
+    s.add(link.attr('href'))
+
+s2 = set()
+g.setup(proxy='149.202.248.203:3128')
+g.go('https://ru.bongacams.com')
+for link in g.doc.select('//a[@class="chat"]'):
+    s2.add(link.attr('href'))
+with open('/home/andrew/bcams', 'w') as f:
+    for link in s.difference(s2):
+        f.write('https://ru.bongacams.com' + link)
+        print 'https://ru.bongacams.com' + link
+
 
