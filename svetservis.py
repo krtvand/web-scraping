@@ -516,6 +516,6 @@ class Svetservis(object):
                 print product.name_from_price
 ss = Svetservis()
 #s.scrap_all()
-#ss.read_price()
+ss.read_price()
 #ss.grab_cable_characts()
 ss.create_csv()

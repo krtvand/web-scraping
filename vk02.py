@@ -9,6 +9,7 @@ import re
 import logging
 import sys
 import time
+import csv
 from socket import gethostbyname
 
 import xlrd
@@ -46,8 +47,12 @@ class Google_search_resaults(Base):
     country1 = Column(String(100))
     title1 = Column(String(1000))
     domain2 = Column(String(1000))
+    ip2 = Column(String(100))
+    country2 = Column(String(100))
     title2 = Column(String(1000))
     domain3 = Column(String(1000))
+    ip3 = Column(String(100))
+    country3 = Column(String(100))
     title3 = Column(String(1000))
 
 
@@ -180,6 +185,22 @@ def get_host_by_name():
                 logger.debug('get host by name %s : %s' % (request.domain1, request.ip1))
             except Exception as e:
                 logger.critical('get host by name failed %s: %s %s' % (request.domain1, e.message, e.args))
+    for request in s.query(Google_search_resaults).filter(Google_search_resaults.ip2 == None):
+        if request.domain2 is not None:
+            try:
+                request.ip2 = gethostbyname(request.domain2).encode('utf-8')
+                s.merge(request)
+                logger.debug('get host by name %s : %s' % (request.domain2, request.ip2))
+            except Exception as e:
+                logger.critical('get host by name failed %s: %s %s' % (request.domain2, e.message, e.args))
+    for request in s.query(Google_search_resaults).filter(Google_search_resaults.ip3 == None):
+        if request.domain3 is not None:
+            try:
+                request.ip3 = gethostbyname(request.domain3).encode('utf-8')
+                s.merge(request)
+                logger.debug('get host by name %s : %s' % (request.domain3, request.ip3))
+            except Exception as e:
+                logger.critical('get host by name failed %s: %s %s' % (request.domain3, e.message, e.args))
     s.commit()
 
 def get_country_by_ip():
@@ -200,11 +221,76 @@ def get_country_by_ip():
             except Exception as e:
                 logger.critical('get country by ip failed %s: %s %s' % (request.ip1, e.message, e.args))
             s.merge(request)
+    for request in s.query(Google_search_resaults).filter(Google_search_resaults.country2 == None):
+        if request.ip2 is not None:
+            try:
+                g.go('http://www.ip2nation.com/ip2nation')
+                g.doc.set_input("ip", request.ip2)
+                g.doc.submit()
+                request.country2 = g.doc.select('//div[@id="visitor-country"]').text().encode('utf-8')
+                logger.debug('get country by ip %s : %s' % (request.ip2, request.country2))
+            except Exception as e:
+                logger.critical('get country by ip failed %s: %s %s' % (request.ip2, e.message, e.args))
+            s.merge(request)
+    for request in s.query(Google_search_resaults).filter(Google_search_resaults.country3 == None):
+        if request.ip3 is not None:
+            try:
+                g.go('http://www.ip2nation.com/ip2nation')
+                g.doc.set_input("ip", request.ip3)
+                g.doc.submit()
+                request.country3 = g.doc.select('//div[@id="visitor-country"]').text().encode('utf-8')
+                logger.debug('get country by ip %s : %s' % (request.ip3, request.country3))
+            except Exception as e:
+                logger.critical('get country by ip failed %s: %s %s' % (request.ip3, e.message, e.args))
+            s.merge(request)
     s.commit()
+
+def create_report():
+    """
+    Функция создает прайс лист в формате csv для покупателей, которые запрашивают прайс лист.
+    csv файл для удобства можно сохранять как excel файл.
+    """
+    with open('/home/andrew/oboron_predrp.csv', 'wb') as f:
+        wr = csv.writer(f, delimiter=';')
+        wr.writerow([u'Ид'.encode('cp1251'), u'Предприятие'.encode('cp1251'),
+                     u'Домен'.encode('cp1251'), u'Заголовок'.encode('cp1251'), u'IP адрес'.encode('cp1251'), u'Страна'.encode('cp1251'),
+                     u'Домен2'.encode('cp1251'), u'Заголовок2'.encode('cp1251'), u'IP адрес2'.encode('cp1251'), u'Страна2'.encode('cp1251'),
+                     u'Домен3'.encode('cp1251'), u'Заголовок3'.encode('cp1251'), u'IP адрес3'.encode('cp1251'), u'Страна3'.encode('cp1251')])
+        s = session()
+        def xstr(s):
+            if s is None:
+                return ''
+            elif isinstance(s, str):
+                try:
+                    return s.decode('utf-8').encode('cp1251')
+                except:
+                    return 'wtf'
+            elif isinstance(s, unicode):
+                return s.encode('cp1251')
+
+        for request in s.query(Google_search_resaults).all():
+            row = ['' for x in range(14)]
+            row[0] = xstr(request.id)
+            row[1] = xstr(request.request)
+            row[2] = xstr(request.domain1)
+            row[3] = xstr(request.title1)
+            row[4] = xstr(request.ip1)
+            row[5] = xstr(request.country1)
+            row[6] = xstr(request.domain2)
+            row[7] = xstr(request.title2)
+            row[8] = xstr(request.ip2)
+            row[9] = xstr(request.country2)
+            row[10] = xstr(request.domain3)
+            row[11] = xstr(request.title3)
+            row[12] = xstr(request.ip3)
+            row[13] = xstr(request.country3)
+            wr.writerow(row)
+
 #goo = Google()
 #print goo.search(u'Всероссийский научно-исследовательский институт авиационных материалов, г. Москва', count=3)
 #print goo.domains
 #read_reestr_from_excel()
 #googling()
-get_host_by_name()
-get_country_by_ip()
+#get_host_by_name()
+#get_country_by_ip()
+create_report()
