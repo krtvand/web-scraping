@@ -307,7 +307,7 @@ for link in g.doc.select('//a[@class="chat"]'):
     s.add(link.attr('href'))
 
 s2 = set()
-g.setup(proxy='149.202.248.203:3128')
+g.setup(proxy='91.217.34.137:8080')
 g.go('https://ru.bongacams.com')
 for link in g.doc.select('//a[@class="chat"]'):
     s2.add(link.attr('href'))
