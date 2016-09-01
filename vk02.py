@@ -62,7 +62,7 @@ class Google_search_resaults(Base):
 
 class Contacts(Base):
     __tablename__ = 'oboron_predpr_contacts'
-    id = Column(Integer, primary_key=True, autoincrement=True)
+    id = Column(String(1000), primary_key=True)
     domain = Column(String(1000))
     contacts_link = Column(String(1000))
     email = Column(String(1000))
@@ -298,51 +298,92 @@ def get_contacts():
 
     s = session()
     p = Pool(1)
-    domains = [x.domain1 for x in s.query(Google_search_resaults).all()]
+    domains = [x.id for x in s.query(Contacts).all() ]
     #for request in s.query(Google_search_resaults).all():
     #    domains.append(request.domain1)
     p.map(get_mail, domains)
 
-def get_mail(domain):
-    print domain
+def get_mail(domain_id):
     s = session()
-    contact = Contacts()
-    contact.domain = domain.encode('utf-8')
+    contact = s.query(Contacts).filter_by(id=domain_id).first()
+    if contact is None:
+        logger.warning('contact id %s not found' % domain_id)
+        return False
     g = Grab(timeout=15)
-    g.go('http://' + domain)
     try:
-        #contacts_link = g.doc.select(u'//a[starts-with(.,"КОНТАКТЫ")]').attr('href')
-        contact.contacts_link = g.doc.rex_search(u'<a.*?href="(.*?)">[Кк][Оо][Нн][Тт][Аа][Кк][Тт][ЫынН].*?</a>').group(1)
+        resp = g.go('http://' + contact.domain.decode('utf-8'))
+    except Exception as e:
+        logger.critical('id %s, open site failed %s %s' % (contact.id, e.message, e.args))
+        contact.email = 'None'
+        contact.contacts_link = 'None'
+        s.merge(contact)
+        s.commit()
+        return None
+    try:
+        contacts_link = g.doc.select(u'//a[starts-with(.,"КОНТАКТЫ")] | //a[starts-with(.,"Контакты")]').attr('href')
+        if isinstance(contacts_link, unicode):
+            contact.contacts_link = contacts_link.encode('utf-8')
+        print contacts_link
+        #contacts_link = g.doc.rex_search(u'<a[^>]*href="(.*?)">[Кк][Оо][Нн][Тт][Аа][Кк][Тт][ЫынН].{0,15}</a>').group(1)
+        #print domain_id, ' ', contacts_link
+
+        #print len(resp.body)
+        #print re.search(ur'<a.*?href="(.*?)">[Кк][Оо][Нн][Тт][Аа][Кк][Тт][ЫынН].*?</a>', resp.body).group(0)
     except:
-        logger.debug('web site %s does not have contact link' % domain)
+        logger.debug('id %s web site %s does not have contact link' % (contact.id, contact.domain.decode('utf-8')))
         contact.email = 'None'
         contact.contacts_link = 'None'
         s.merge(contact)
         s.commit()
         return None
     if contact.contacts_link is not None:
-        g.go(contact.contacts_link)
         try:
-            contact.email = g.doc.rex_search('[\w\.-]+@[\w-]+\.[a-zA-Z]{2,4}').group(0)
-            logger.info('%s Finded email: %s' % (domain, contact.email))
-            if contact.email is None:
-                logger.debug('%s email not found' % domain)
+            g.go(contact.contacts_link)
+            email = g.doc.rex_search('[\w\.-]+@[\w-]+\.[a-zA-Z]{2,4}').group(0)
+            if email is None:
+                logger.debug('id %s %s email not found' % (contact.id, contact.domain.decode('utf-8')))
                 contact.email = 'None'
                 s.merge(contact)
                 s.commit()
                 return None
             else:
-                contact.email = contact.email.encode('utf-8')
+                logger.info('id %s %s Finded email: %s' % (contact.id, contact.domain.decode('utf-8'), email))
+                contact.email = email.encode('utf-8')
                 s.merge(contact)
                 s.commit()
-                return contact.email
+                return True
         except Exception as e:
-            logger.critical('get email failed %s %s' % (e.message, e.args))
+            logger.critical('id %s, page %s, get email failed %s %s' % (contact.id, contact.contacts_link.decode('utf-8'), e.message, e.args))
             return None
 
+def read_domains_from_excel():
+    try:
+        rb = xlrd.open_workbook('/home/andrew/vk02.xlsx')
+    except:
+        logger.critical('Can not open file!')
+        return
+    contact = Contacts()
+    sheet = rb.sheet_by_index(0)
+    s = session()
+    for row_index in range(sheet.nrows):
+        # Сохраняем артикул в нужном формате, и пропускаем строку,
+        # если нет записи для артикула
+        id = sheet.row(row_index)[0].value
+        logger.debug('id %s' % id)
+        if isinstance(id, float):
+            contact.id = ('%04.0f' % id)
+        else:
+            continue
+        domain = sheet.row(row_index)[2].value
+        # Удаляем пробельные символы в начале и в кноце строки
+        domain = domain.lstrip().rstrip()
+        contact.domain = domain.encode('utf-8')
+        s.merge(contact)
+    s.commit()
 
-#get_mail('viam.ru')
-get_contacts()
+#read_domains_from_excel()
+get_mail('0008')
+#get_contacts()
 #goo = Google()
 #print goo.search(u'Всероссийский научно-исследовательский институт авиационных материалов, г. Москва', count=3)
 #print goo.domains
