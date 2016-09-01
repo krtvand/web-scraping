@@ -4,15 +4,16 @@
 REESTR_OBORON_PREDPR = 'reestr_oboron_predpr.xls'
 PROXY_LIST = 'proxy_list'
 
-from grab import Grab
 import re
 import logging
 import sys
 import time
 import csv
 from socket import gethostbyname
+from multiprocessing import Pool
 
 import xlrd
+from grab import Grab
 from sqlalchemy import Column, DateTime, String, Integer, ForeignKey, func, Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import create_engine
@@ -55,10 +56,17 @@ class Google_search_resaults(Base):
     country3 = Column(String(100))
     title3 = Column(String(1000))
 
-
     def __repr__(self):
         return "<Google_search_resaults('%s','%s', '%s')>" % \
                (self.request, self.domain1, self.title1)
+
+class Contacts(Base):
+    __tablename__ = 'oboron_predpr_contacts'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    domain = Column(String(1000))
+    contacts_link = Column(String(1000))
+    email = Column(String(1000))
+
 
 Base.metadata.create_all(engine)
 
@@ -286,6 +294,55 @@ def create_report():
             row[13] = xstr(request.country3)
             wr.writerow(row)
 
+def get_contacts():
+
+    s = session()
+    p = Pool(1)
+    domains = [x.domain1 for x in s.query(Google_search_resaults).all()]
+    #for request in s.query(Google_search_resaults).all():
+    #    domains.append(request.domain1)
+    p.map(get_mail, domains)
+
+def get_mail(domain):
+    print domain
+    s = session()
+    contact = Contacts()
+    contact.domain = domain.encode('utf-8')
+    g = Grab(timeout=15)
+    g.go('http://' + domain)
+    try:
+        #contacts_link = g.doc.select(u'//a[starts-with(.,"КОНТАКТЫ")]').attr('href')
+        contact.contacts_link = g.doc.rex_search(u'<a.*?href="(.*?)">[Кк][Оо][Нн][Тт][Аа][Кк][Тт][ЫынН].*?</a>').group(1)
+    except:
+        logger.debug('web site %s does not have contact link' % domain)
+        contact.email = 'None'
+        contact.contacts_link = 'None'
+        s.merge(contact)
+        s.commit()
+        return None
+    if contact.contacts_link is not None:
+        g.go(contact.contacts_link)
+        try:
+            contact.email = g.doc.rex_search('[\w\.-]+@[\w-]+\.[a-zA-Z]{2,4}').group(0)
+            logger.info('%s Finded email: %s' % (domain, contact.email))
+            if contact.email is None:
+                logger.debug('%s email not found' % domain)
+                contact.email = 'None'
+                s.merge(contact)
+                s.commit()
+                return None
+            else:
+                contact.email = contact.email.encode('utf-8')
+                s.merge(contact)
+                s.commit()
+                return contact.email
+        except Exception as e:
+            logger.critical('get email failed %s %s' % (e.message, e.args))
+            return None
+
+
+#get_mail('viam.ru')
+get_contacts()
 #goo = Google()
 #print goo.search(u'Всероссийский научно-исследовательский институт авиационных материалов, г. Москва', count=3)
 #print goo.domains
@@ -293,4 +350,4 @@ def create_report():
 #googling()
 #get_host_by_name()
 #get_country_by_ip()
-create_report()
+#create_report()
