@@ -9,10 +9,13 @@ import logging
 import sys
 import time
 import csv
+import ast
 from socket import gethostbyname
 from multiprocessing import Pool
 
 import xlrd
+import DNS
+import dns.resolver
 from grab import Grab
 from sqlalchemy import Column, DateTime, String, Integer, ForeignKey, func, Float
 from sqlalchemy.ext.declarative import declarative_base
@@ -66,7 +69,9 @@ class Contacts(Base):
     domain = Column(String(1000))
     contacts_link = Column(String(1000))
     email = Column(String(1000))
-
+    mx_records = Column(String(1000))
+    mx_hosts = Column(String(1000))
+    mx_countries = Column(String(1000))
 
 Base.metadata.create_all(engine)
 
@@ -298,7 +303,7 @@ def get_contacts():
 
     s = session()
     p = Pool(1)
-    domains = [x.id for x in s.query(Contacts).all() ]
+    domains = [x.id for x in s.query(Contacts).filter(Contacts.email == None).filter(Contacts.domain != 'нет сайта').all() ]
     #for request in s.query(Google_search_resaults).all():
     #    domains.append(request.domain1)
     p.map(get_mail, domains)
@@ -311,50 +316,59 @@ def get_mail(domain_id):
         return False
     g = Grab(timeout=15)
     try:
-        resp = g.go('http://' + contact.domain.decode('utf-8'))
+        g.go('http://' + contact.domain.decode('utf-8'))
     except Exception as e:
         logger.critical('id %s, open site failed %s %s' % (contact.id, e.message, e.args))
-        contact.email = 'None'
-        contact.contacts_link = 'None'
-        s.merge(contact)
-        s.commit()
-        return None
+        #contact.email = 'None'
+        #contact.contacts_link = 'None'
+        #s.merge(contact)
+        #s.commit()
+        return False
     try:
-        contacts_link = g.doc.select(u'//a[starts-with(.,"КОНТАКТЫ")] | //a[starts-with(.,"Контакты")]').attr('href')
+        contacts_link = g.doc.select(u'//a[starts-with(.,"КОНТАКТЫ")] | '
+                                     u'//a[starts-with(.,"Контакты")] | '
+                                     u'//a[starts-with(.,"Контактная информация")]').attr('href')
         if isinstance(contacts_link, unicode):
             contact.contacts_link = contacts_link.encode('utf-8')
-        print contacts_link
+        elif contacts_link is not None:
+            contact.contacts_link = contacts_link
+        else:
+            logger.warning('id %s contact link is empty' % contact.id)
+            return False
         #contacts_link = g.doc.rex_search(u'<a[^>]*href="(.*?)">[Кк][Оо][Нн][Тт][Аа][Кк][Тт][ЫынН].{0,15}</a>').group(1)
-        #print domain_id, ' ', contacts_link
-
-        #print len(resp.body)
         #print re.search(ur'<a.*?href="(.*?)">[Кк][Оо][Нн][Тт][Аа][Кк][Тт][ЫынН].*?</a>', resp.body).group(0)
     except:
         logger.debug('id %s web site %s does not have contact link' % (contact.id, contact.domain.decode('utf-8')))
-        contact.email = 'None'
-        contact.contacts_link = 'None'
-        s.merge(contact)
-        s.commit()
-        return None
-    if contact.contacts_link is not None:
+        #contact.email = 'None'
+        #contact.contacts_link = 'None'
+        #s.merge(contact)
+        #s.commit()
+        return False
+    if contacts_link is not None:
+
         try:
-            g.go(contact.contacts_link)
-            email = g.doc.rex_search('[\w\.-]+@[\w-]+\.[a-zA-Z]{2,4}').group(0)
-            if email is None:
-                logger.debug('id %s %s email not found' % (contact.id, contact.domain.decode('utf-8')))
-                contact.email = 'None'
-                s.merge(contact)
-                s.commit()
-                return None
-            else:
-                logger.info('id %s %s Finded email: %s' % (contact.id, contact.domain.decode('utf-8'), email))
-                contact.email = email.encode('utf-8')
-                s.merge(contact)
-                s.commit()
-                return True
+            g.go(contacts_link)
         except Exception as e:
-            logger.critical('id %s, page %s, get email failed %s %s' % (contact.id, contact.contacts_link.decode('utf-8'), e.message, e.args))
-            return None
+            logger.critical('id %s, can not open contats page %s (%s %s)' %
+                            (contact.id, contacts_link, e.message, e.args))
+            #contact.email = 'None'
+            #s.merge(contact)
+            #s.commit()
+            return False
+        try:
+            email = g.doc.rex_search('[\w\.-]+@[\w-]+\.[a-zA-Z]{2,4}').group(0)
+        except Exception as e:
+            logger.warning('id %s, can not find email by regexp (%s %s)' % (contact.id, e.message, e.args))
+            #contact.email = 'None'
+            s.merge(contact)
+            s.commit()
+            return False
+        if email is not None:
+            logger.info('id %s %s Finded email: %s' % (contact.id, contact.domain.decode('utf-8'), email))
+            contact.email = email.encode('utf-8')
+            s.merge(contact)
+            s.commit()
+            return True
 
 def read_domains_from_excel():
     try:
@@ -381,8 +395,57 @@ def read_domains_from_excel():
         s.merge(contact)
     s.commit()
 
+def get_mx():
+    s = session()
+    """
+    for contact in s.query(Contacts).filter(Contacts.email != None).all():
+        answers = dns.resolver.query(contact.email.split('@')[-1], 'MX')
+        print str([rdata.exchange for rdata in answers])
+    """
+
+    """
+    DNS.DiscoverNameServers()
+    try:
+        contact.mx_records = repr(DNS.mxlookup(contact.email.split('@')[-1])).encode('utf-8')
+        logger.debug('id %s mx records: %s' % (contact.id, contact.mx_records.decode('utf-8')))
+        s.merge(contact)
+        s.commit()
+    except:
+        logger.warning('id %s failed to get mx record' % contact.id.decode('utf-8'))
+    """
+    for contact in s.query(Contacts).filter(Contacts.mx_hosts == None).filter(Contacts.mx_records != None)[:1]:
+        # Имеем в базе mx записи типа [(8, 'mail.nmz-group.ru'), (9, 'mx.nmz-group.ru')]
+        # print re.search(r'(\(.*?\))+', contact.mx_records).groups()
+        #print list(ast.literal_eval(contact.mx_records))[0]
+        g = Grab()
+        try:
+            iplist = []
+            countries = []
+            for rr in list(ast.literal_eval(contact.mx_records)):
+                host = repr(rr).strip('()').split(', ')[1].strip("'")
+                ip = gethostbyname(host)
+                try:
+                    g.go('http://www.ip2nation.com/ip2nation')
+                    g.doc.set_input("ip", ip)
+                    g.doc.submit()
+                    country = g.doc.select('//div[@id="visitor-country"]').text().encode('utf-8')
+                    logger.debug('get country by ip %s : %s' % (ip, country))
+                    countries.append(country)
+                except Exception as e:
+                    logger.critical('get country by ip failed %s: %s %s' % (ip, e.message, e.args))
+                iplist.append(ip)
+            contact.mx_hosts = repr(iplist).encode('utf-8')
+            contact.mx_countries = repr(countries).encode('utf-8')
+            s.merge(contact)
+            #s.commit()
+            logger.debug('id: %s get host by name : %s' % (contact.id, repr(iplist)))
+            logger.debug('id: %s country : %s' % (contact.id, repr(countries)))
+        except Exception as e:
+            logger.critical('get host by name failed %s: %s %s' % (contact.id, e.message, e.args))
+
+get_mx()
 #read_domains_from_excel()
-get_mail('0008')
+#get_mail('0008')
 #get_contacts()
 #goo = Google()
 #print goo.search(u'Всероссийский научно-исследовательский институт авиационных материалов, г. Москва', count=3)
