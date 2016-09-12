@@ -258,6 +258,35 @@ def get_country_by_ip():
             s.merge(request)
     s.commit()
 
+def xstr(s):
+    if s is None:
+        return ''
+    elif isinstance(s, str):
+        try:
+            return s.decode('utf-8').encode('cp1251')
+        except:
+            return 'wtf'
+    elif isinstance(s, unicode):
+        return s.encode('cp1251')
+
+def create_report_contacts():
+    with open('/home/andrew/oboron_predrp_contacts.csv', 'wb') as f:
+        wr = csv.writer(f, delimiter=';')
+        wr.writerow([u'Ид'.encode('cp1251'), u'Предприятие'.encode('cp1251'), u'Домен'.encode('cp1251'),
+                     u'email'.encode('cp1251'),  u'MX запись'.encode('cp1251'), u'IP адрес'.encode('cp1251'),
+                     u'Страна'.encode('cp1251')])
+        s = session()
+        for contact in s.query(Contacts).all():
+            row = ['' for x in range(14)]
+            row[0] = xstr(contact.id)
+            row[1] = xstr(s.query(Google_search_resaults).filter(Google_search_resaults.id == contact.id).first().request)
+            row[2] = xstr(contact.domain)
+            row[3] = xstr(contact.email)
+            row[4] = xstr(contact.mx_records)
+            row[5] = xstr(contact.mx_hosts)
+            row[6] = xstr(contact.mx_countries)
+            wr.writerow(row)
+
 def create_report():
     """
     Функция создает прайс лист в формате csv для покупателей, которые запрашивают прайс лист.
@@ -270,17 +299,6 @@ def create_report():
                      u'Домен2'.encode('cp1251'), u'Заголовок2'.encode('cp1251'), u'IP адрес2'.encode('cp1251'), u'Страна2'.encode('cp1251'),
                      u'Домен3'.encode('cp1251'), u'Заголовок3'.encode('cp1251'), u'IP адрес3'.encode('cp1251'), u'Страна3'.encode('cp1251')])
         s = session()
-        def xstr(s):
-            if s is None:
-                return ''
-            elif isinstance(s, str):
-                try:
-                    return s.decode('utf-8').encode('cp1251')
-                except:
-                    return 'wtf'
-            elif isinstance(s, unicode):
-                return s.encode('cp1251')
-
         for request in s.query(Google_search_resaults).all():
             row = ['' for x in range(14)]
             row[0] = xstr(request.id)
@@ -356,7 +374,7 @@ def get_mail(domain_id):
             #s.commit()
             return False
         try:
-            email = g.doc.rex_search('[\w\.-]+@[\w-]+\.[a-zA-Z]{2,4}').group(0)
+            email = g.doc.rex_search('[\w\.-]+@([\w-]+\.){1,2}[a-zA-Z]{2,4}').group(0)
         except Exception as e:
             logger.warning('id %s, can not find email by regexp (%s %s)' % (contact.id, e.message, e.args))
             #contact.email = 'None'
@@ -403,17 +421,18 @@ def get_mx():
         print str([rdata.exchange for rdata in answers])
     """
 
-    """
+    # Получаем MX записи для каждого email
     DNS.DiscoverNameServers()
-    try:
-        contact.mx_records = repr(DNS.mxlookup(contact.email.split('@')[-1])).encode('utf-8')
-        logger.debug('id %s mx records: %s' % (contact.id, contact.mx_records.decode('utf-8')))
-        s.merge(contact)
-        s.commit()
-    except:
-        logger.warning('id %s failed to get mx record' % contact.id.decode('utf-8'))
-    """
-    for contact in s.query(Contacts).filter(Contacts.mx_hosts == None).filter(Contacts.mx_records != None)[:1]:
+    for contact in s.query(Contacts).filter(Contacts.email != None).filter(Contacts.mx_records == None).all():
+        try:
+            contact.mx_records = repr(DNS.mxlookup(contact.email.split('@')[-1])).encode('utf-8')
+            logger.debug('id %s mx records: %s' % (contact.id, contact.mx_records.decode('utf-8')))
+            s.merge(contact)
+            s.commit()
+        except:
+            logger.warning('id %s failed to get mx record' % contact.id.decode('utf-8'))
+    # Получаем ip для каждого MX хоста, и его страну
+    for contact in s.query(Contacts).filter(Contacts.mx_hosts == None).filter(Contacts.mx_records != None):
         # Имеем в базе mx записи типа [(8, 'mail.nmz-group.ru'), (9, 'mx.nmz-group.ru')]
         # print re.search(r'(\(.*?\))+', contact.mx_records).groups()
         #print list(ast.literal_eval(contact.mx_records))[0]
@@ -429,7 +448,7 @@ def get_mx():
                     g.doc.set_input("ip", ip)
                     g.doc.submit()
                     country = g.doc.select('//div[@id="visitor-country"]').text().encode('utf-8')
-                    logger.debug('get country by ip %s : %s' % (ip, country))
+                    #logger.debug('get country by ip %s : %s' % (ip, country))
                     countries.append(country)
                 except Exception as e:
                     logger.critical('get country by ip failed %s: %s %s' % (ip, e.message, e.args))
@@ -437,15 +456,17 @@ def get_mx():
             contact.mx_hosts = repr(iplist).encode('utf-8')
             contact.mx_countries = repr(countries).encode('utf-8')
             s.merge(contact)
-            #s.commit()
+            s.commit()
             logger.debug('id: %s get host by name : %s' % (contact.id, repr(iplist)))
             logger.debug('id: %s country : %s' % (contact.id, repr(countries)))
         except Exception as e:
             logger.critical('get host by name failed %s: %s %s' % (contact.id, e.message, e.args))
 
-get_mx()
+
+create_report_contacts()
+#get_mx()
 #read_domains_from_excel()
-#get_mail('0008')
+#get_mail('0003')
 #get_contacts()
 #goo = Google()
 #print goo.search(u'Всероссийский научно-исследовательский институт авиационных материалов, г. Москва', count=3)
